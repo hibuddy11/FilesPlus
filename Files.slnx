@@ -22,6 +22,18 @@
       <Platform Solution="*|x86" Project="x86" />
     </Project>
   </Folder>
+  <Folder Name="/src/plugins/">
+    <Project Path="src/Files.Plugins.Abstractions/Files.Plugins.Abstractions.csproj">
+      <Platform Solution="*|arm64" Project="arm64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x86" />
+    </Project>
+    <Project Path="src/Files.Plugins.Demo/Files.Plugins.Demo.csproj">
+      <Platform Solution="*|arm64" Project="arm64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x86" />
+    </Project>
+  </Folder>
   <Folder Name="/src/platforms/">
     <Project Path="src/Files.App.BackgroundTasks/Files.App.BackgroundTasks.csproj">
       <Platform Solution="*|arm64" Project="arm64" />

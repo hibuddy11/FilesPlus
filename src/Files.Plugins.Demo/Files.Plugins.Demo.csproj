@@ -1,0 +1,30 @@
+<!--  Copyright (c) Files Community. Licensed under the MIT License.  -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(TargetFrameworkVersion)</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Configurations>Debug;Release</Configurations>
+        <Platforms>x86;x64;arm64</Platforms>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Files.Plugins.Abstractions\Files.Plugins.Abstractions.csproj" />
+    </ItemGroup>
+
+    <!--  Copies the built plugin next to the unpackaged app output so it is picked up from the
+          plugins directory at startup. The path mirrors Files.App's unpackaged OutDir (hard-coded
+          the same way pack-release.ps1 does); the copies are skipped when that output does not
+          exist yet.  -->
+    <Target Name="CopyToAppPluginsDirectory" AfterTargets="Build">
+        <PropertyGroup>
+            <AppOutRoot>$(MSBuildThisProjectDirectory)..\Files.App\bin\Unpackaged\$(Platform)\$(Configuration)\net10.0-windows10.0.26100.0\win-$(Platform)\</AppOutRoot>
+            <AppPluginsDir>$(AppOutRoot)plugins\</AppPluginsDir>
+        </PropertyGroup>
+        <MakeDir Directories="$(AppPluginsDir)" Condition="$([System.IO.Directory]::Exists('$(AppOutRoot)'))" />
+        <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(AppPluginsDir)" SkipUnchangedFiles="true" Condition="$([System.IO.Directory]::Exists('$(AppOutRoot)'))" />
+    </Target>
+
+</Project>

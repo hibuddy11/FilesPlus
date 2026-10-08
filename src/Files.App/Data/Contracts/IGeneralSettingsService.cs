@@ -21,6 +21,11 @@ namespace Files.App.Data.Contracts
 		bool ContinueLastSessionOnStartUp { get; set; }
 
 		/// <summary>
+		/// Ids of runtime plugins the user disabled; a plugin not in this list is enabled.
+		/// </summary>
+		List<string>? DisabledPlugins { get; set; }
+
+		/// <summary>
 		/// Gets or sets a value indicating whether or not to open a page when the app is launched.
 		/// </summary>
 		bool OpenNewTabOnStartup { get; set; }

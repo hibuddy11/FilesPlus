@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Files.App.Helpers.Application;
+using Files.App.Services.Plugins;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -91,6 +92,19 @@ namespace Files.App
 
 						// Configure Ioc here so Ioc.Default-dependent constructions warm off-thread too
 						Ioc.Default.ConfigureServices(provider);
+
+						// Load user plugins; per-plugin failures are logged and do not affect startup
+						_ = Task.Run(async () =>
+						{
+							try
+							{
+								await provider.GetRequiredService<IPluginService>().InitializeAsync(default);
+							}
+							catch (Exception ex)
+							{
+								App.Logger?.LogWarning(ex, "Plugin initialization failed.");
+							}
+						});
 
 						// Warm the settings file reads off the UI thread
 						_ = provider.GetRequiredService<IGeneralSettingsService>().LeaveAppRunning;
@@ -315,6 +329,16 @@ namespace Files.App
 				AppLifecycleHelper.SaveSessionTabs();
 			else
 				await commandManager.CloseAllTabs.ExecuteAsync();
+
+			// Give plugins a chance to save state before teardown
+			try
+			{
+				await Ioc.Default.GetRequiredService<IPluginService>().ShutdownAsync(default);
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Plugin shutdown failed.");
+			}
 
 			if (OutputPath is not null)
 			{

@@ -29,6 +29,12 @@ namespace Files.App.Services.Settings
 			set => Set(value);
 		}
 
+		public List<string>? DisabledPlugins
+		{
+			get => Get<List<string>>(null);
+			set => Set(value);
+		}
+
 		public bool OpenNewTabOnStartup
 		{
 			get => Get(false);

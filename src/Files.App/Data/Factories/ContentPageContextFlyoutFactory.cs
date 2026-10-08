@@ -2,8 +2,11 @@
 // Licensed under the MIT License.
 
 using Files.App.Helpers.ContextFlyouts;
+using Files.App.Services.Plugins;
 using Files.App.ViewModels.Layouts;
 using Files.Shared.Helpers;
+using Files.Plugins;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.IO;
@@ -99,7 +102,7 @@ namespace Files.App.Data.Factories
 
 			bool isDriveRoot = itemViewModel?.CurrentFolder is not null && (itemViewModel.CurrentFolder.ItemPath == Path.GetPathRoot(itemViewModel.CurrentFolder.ItemPath));
 
-			return new List<ContextMenuFlyoutItemViewModel>()
+			var menuItems = new List<ContextMenuFlyoutItemViewModel>()
 			{
 				new ContextMenuFlyoutItemViewModelBuilder(Commands.CloseActivePane)
 				{
@@ -678,9 +681,64 @@ namespace Files.App.Data.Factories
 					ShowInRecycleBin = true,
 					ShowInSearchPage = true,
 					IsEnabled = false
-				},
-			}.Where(x => x.ShowItem).ToList();
-		}
+					},
+					}.Where(x => x.ShowItem).ToList();
+
+					AppendPluginMenuItems(menuItems, selectedItems, itemViewModel);
+
+					return menuItems;
+					}
+
+					/// <summary>
+					/// Appends context-menu entries contributed by runtime plugins, behind a separator.
+					/// A plugin failure never breaks the built-in menu.
+					/// </summary>
+					private static void AppendPluginMenuItems(List<ContextMenuFlyoutItemViewModel> items, List<ListedItem> selectedItems, ShellViewModel? itemViewModel)
+					{
+					IReadOnlyList<PluginContextMenuItem> contributions;
+
+					try
+					{
+					var pluginService = Ioc.Default.GetService<IPluginService>();
+					if (pluginService?.Plugins.Count is not > 0)
+						return;
+
+					contributions = pluginService.GetContextMenuItems(new()
+					{
+						WorkingDirectory = itemViewModel?.WorkingDirectory
+							?? (selectedItems.Count > 0 ? Path.GetDirectoryName(selectedItems[0].ItemPath) : null),
+						SelectedPaths = [.. selectedItems.Select(x => x.ItemPath).WhereNotNull()],
+						SelectedNames = [.. selectedItems.Select(x => x.Name).WhereNotNull()],
+					});
+					}
+					catch (Exception ex)
+					{
+					App.Logger?.LogWarning(ex, "Failed to collect plugin context menu items.");
+					return;
+					}
+
+					if (contributions.Count is 0)
+					return;
+
+					items.Add(new ContextMenuFlyoutItemViewModel()
+					{
+					ItemType = ContextMenuFlyoutItemType.Separator,
+					});
+					foreach (var contribution in contributions)
+					{
+					items.Add(new ContextMenuFlyoutItemViewModel()
+					{
+						Text = contribution.Text,
+						Glyph = contribution.Glyph,
+						IsEnabled = contribution.IsEnabled,
+						Command = new AsyncRelayCommand(contribution.Execute),
+						ShowInRecycleBin = true,
+						ShowInSearchPage = true,
+						ShowInFtpPage = true,
+						ShowInZipPage = true,
+					});
+					}
+					}
 
 		public static List<ContextMenuFlyoutItemViewModel> GetNewItemItems(BaseLayoutViewModel commandsViewModel, bool canCreateFileInPage)
 		{
