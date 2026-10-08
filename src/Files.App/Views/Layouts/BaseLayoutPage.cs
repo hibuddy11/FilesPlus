@@ -796,15 +796,20 @@ namespace Files.App.Views.Layouts
 		/// </summary>
 		protected virtual bool IsRightTapWithinOwnedFlyoutRegion(ContextRequestedEventArgs e) => false;
 
-		private async Task<IShellPage> EnsurePageIsCurrentAsync()
+		private async Task<IShellPage> EnsurePageIsCurrentAsync(MenuFlyout? flyout = null)
 		{
 			var parentShellPage = ParentShellPageInstance
 				?? throw new InvalidOperationException("The layout does not have a parent shell page.");
 			if (!parentShellPage.IsCurrentInstance || !parentShellPage.IsCurrentPane)
 			{
-				// Wait until the pane and column become current, then let the page context update
+				// Wait until the pane and column become current, then let the page context update.
+				// The flyout is already open with no content during this wait; hide it and re-open
+				// when ready so the user never sees an empty menu.
+				flyout?.Hide();
 				await Task.WhenAny(parentShellPage.WhenIsCurrent(), Task.Delay(500));
 				await Task.Delay(10);
+				if (flyout?.Target is not null)
+					flyout.ShowAt(flyout.Target);
 			}
 
 			return parentShellPage;
@@ -822,7 +827,7 @@ namespace Files.App.Views.Layouts
 		{
 			try
 			{
-				var parentShellPage = await EnsurePageIsCurrentAsync();
+				var parentShellPage = await EnsurePageIsCurrentAsync(sender as MenuFlyout);
 				var shellViewModel = parentShellPage.GetRequiredShellViewModel();
 				var commandsViewModel = CommandsViewModel
 					?? throw new InvalidOperationException("The layout commands are not initialized.");
@@ -906,7 +911,7 @@ namespace Files.App.Views.Layouts
 			}
 			catch (Exception error)
 			{
-				Debug.WriteLine(error);
+				App.Logger?.LogWarning(error, "Failed to build the item context flyout.");
 			}
 		}
 
@@ -1095,7 +1100,7 @@ namespace Files.App.Views.Layouts
 		{
 			try
 			{
-				var parentShellPage = await EnsurePageIsCurrentAsync();
+				var parentShellPage = await EnsurePageIsCurrentAsync(sender as MenuFlyout);
 				var shellViewModel = parentShellPage.GetRequiredShellViewModel();
 				var commandsViewModel = CommandsViewModel
 					?? throw new InvalidOperationException("The layout commands are not initialized.");
@@ -1139,12 +1144,12 @@ namespace Files.App.Views.Layouts
 				}
 
 				host.FinalizePrimaryRowPosition();
-			}
-			catch (Exception error)
-			{
-				Debug.WriteLine(error);
-			}
-		}
+				}
+				catch (Exception error)
+				{
+				App.Logger?.LogWarning(error, "Failed to build the base context flyout.");
+				}
+				}
 
 		public void UpdateSelectionSize()
 		{
