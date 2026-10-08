@@ -16,15 +16,14 @@
 
     <!--  Copies the built plugin next to the unpackaged app output so it is picked up from the
           plugins directory at startup. The path mirrors Files.App's unpackaged OutDir (hard-coded
-          the same way pack-release.ps1 does); the copies are skipped when that output does not
-          exist yet.  -->
+          the same way pack-release.ps1 does). Unconditional so it works no matter whether the app
+          was built before or after this project.  -->
     <Target Name="CopyToAppPluginsDirectory" AfterTargets="Build">
         <PropertyGroup>
-            <AppOutRoot>$(MSBuildThisProjectDirectory)..\Files.App\bin\Unpackaged\$(Platform)\$(Configuration)\net10.0-windows10.0.26100.0\win-$(Platform)\</AppOutRoot>
-            <AppPluginsDir>$(AppOutRoot)plugins\</AppPluginsDir>
+            <AppPluginsDir>$(MSBuildThisProjectDirectory)..\Files.App\bin\Unpackaged\$(Platform)\$(Configuration)\net10.0-windows10.0.26100.0\win-$(Platform)\plugins\</AppPluginsDir>
         </PropertyGroup>
-        <MakeDir Directories="$(AppPluginsDir)" Condition="$([System.IO.Directory]::Exists('$(AppOutRoot)'))" />
-        <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(AppPluginsDir)" SkipUnchangedFiles="true" Condition="$([System.IO.Directory]::Exists('$(AppOutRoot)'))" />
+        <MakeDir Directories="$(AppPluginsDir)" />
+        <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).deps.json" DestinationFolder="$(AppPluginsDir)" SkipUnchangedFiles="true" />
     </Target>
 
 </Project>
