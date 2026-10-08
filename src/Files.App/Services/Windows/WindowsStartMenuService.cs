@@ -1,4 +1,5 @@
-﻿using Windows.UI.StartScreen;
+﻿using Microsoft.Extensions.Logging;
+using Windows.UI.StartScreen;
 
 namespace Files.App.Services
 {
@@ -9,16 +10,32 @@ namespace Files.App.Services
 		public bool IsPinned(string itemPath)
 		{
 			var tileId = GetNativeTileId(itemPath);
-			return SecondaryTile.Exists(tileId);
+			try
+			{
+				return SecondaryTile.Exists(tileId);
+			}
+			catch (Exception ex)
+			{
+				// SecondaryTile.Exists can throw (e.g. 0x80070490) for special items; treat as not pinned
+				// instead of breaking the whole context menu build.
+				App.Logger?.LogWarning(ex, "Failed to check whether the item is pinned to Start.");
+				return false;
+			}
 		}
 
 		/// <inheritdoc/>
 		public Task<bool> IsPinnedAsync(IStorable storable)
 		{
 			var tileId = GetNativeTileId(storable.Id);
-			var exists = SecondaryTile.Exists(tileId);
-
-			return Task.FromResult(exists);
+			try
+			{
+				return Task.FromResult(SecondaryTile.Exists(tileId));
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Failed to check whether the item is pinned to Start.");
+				return Task.FromResult(false);
+			}
 		}
 
 		/// <inheritdoc/>
