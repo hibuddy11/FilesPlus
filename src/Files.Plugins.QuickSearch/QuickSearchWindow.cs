@@ -5,6 +5,7 @@ using Files.Plugins;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using System.Diagnostics;
 
 namespace Files.Plugins.QuickSearch;
 
@@ -25,8 +26,9 @@ internal sealed partial class QuickSearchWindow
 	private readonly TextBlock statusText;
 	private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer debounceTimer;
 
-	private List<SearchEntry> entries = [];
+	private readonly List<SearchEntry> entries = [];
 	private List<SearchEntry> results = [];
+	private volatile bool isScanning;
 	private int filterVersion;
 
 	public QuickSearchWindow(IFilesPluginHost host, string rootDirectory)
@@ -94,21 +96,66 @@ internal sealed partial class QuickSearchWindow
 		window.Activate();
 
 		statusText.Text = "正在建立索引…";
-		_ = Task.Run(() =>
+		isScanning = true;
+		_ = Task.Run(ScanAndStreamResults);
+	}
+
+	/// <summary>
+	/// Streams the scan into the index in batches so results are searchable long before the
+	/// whole tree has been walked.
+	/// </summary>
+	private void ScanAndStreamResults()
+	{
+		try
 		{
-			try
+			var batch = new List<SearchEntry>(capacity: 4096);
+			var lastFlush = Stopwatch.StartNew();
+			var scanned = 0;
+
+			foreach (var entry in DirectoryScanner.Scan(rootDirectory))
 			{
-				var scanned = DirectoryScanner.Scan(rootDirectory);
-				window.DispatcherQueue.TryEnqueue(() =>
-				{
-					entries = scanned;
-					_ = RunFilterAsync(searchBox.Text);
-				});
+				if (scanned >= DirectoryScanner.MaxEntries)
+					break;
+
+				scanned++;
+				batch.Add(entry);
+
+				if (batch.Count < 4096 && lastFlush.ElapsedMilliseconds < 400)
+					continue;
+
+				FlushBatch(batch);
+				batch = [];
+				lastFlush.Restart();
 			}
-			catch (Exception ex)
-			{
-				window.DispatcherQueue.TryEnqueue(() => host.LogError("files.quicksearch", "Directory scan failed.", ex));
-			}
+
+			if (batch.Count > 0)
+				FlushBatch(batch);
+		}
+		catch (Exception ex)
+		{
+			window.DispatcherQueue.TryEnqueue(() => host.LogError("files.quicksearch", "Directory scan failed.", ex));
+			return;
+		}
+
+		window.DispatcherQueue.TryEnqueue(() =>
+		{
+			isScanning = false;
+			_ = RunFilterAsync(searchBox.Text);
+		});
+	}
+
+	private void FlushBatch(List<SearchEntry> batch)
+	{
+		// Hand the UI thread a snapshot it owns
+		var chunk = batch.ToArray();
+		window.DispatcherQueue.TryEnqueue(() =>
+		{
+			var remaining = DirectoryScanner.MaxEntries - entries.Count;
+			if (remaining <= 0)
+				return;
+
+			entries.AddRange(chunk.Length <= remaining ? chunk : chunk[..remaining]);
+			_ = RunFilterAsync(searchBox.Text);
 		});
 	}
 }

@@ -47,7 +47,8 @@ internal sealed partial class QuickSearchWindow
 	private async Task RunFilterAsync(string query)
 	{
 		var version = ++filterVersion;
-		var source = entries;
+		// Snapshot: the scan merges new entries into the list on the UI thread while this runs
+		var source = entries.ToArray();
 
 		List<SearchEntry> filtered;
 		try
@@ -76,6 +77,8 @@ internal sealed partial class QuickSearchWindow
 			statusText.Text = string.IsNullOrWhiteSpace(query)
 				? $"已索引 {entries.Count} 项"
 				: $"匹配 {filtered.Count} 项（已索引 {entries.Count} 项）";
+			if (isScanning)
+				statusText.Text += "，扫描中…";
 		}
 		catch (Exception ex)
 		{
@@ -83,7 +86,7 @@ internal sealed partial class QuickSearchWindow
 		}
 	}
 
-	private static List<SearchEntry> Filter(List<SearchEntry> source, string query)
+	private static List<SearchEntry> Filter(IReadOnlyList<SearchEntry> source, string query)
 	{
 		if (string.IsNullOrWhiteSpace(query))
 		{
