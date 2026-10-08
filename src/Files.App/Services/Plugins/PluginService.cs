@@ -4,6 +4,7 @@
 using Files.App.Helpers.Application;
 using Files.Plugins;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 
@@ -111,6 +112,14 @@ internal sealed class PluginService : IPluginService, IFilesPluginHost
 
 	public void LogError(string pluginId, string message, Exception? exception = null)
 		=> App.Logger?.LogError(exception, "[Plugin {PluginId}] {Message}", pluginId, message);
+
+	public void OpenPath(string path)
+	{
+		if (string.IsNullOrEmpty(path))
+			return;
+
+		Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+	}
 
 	private List<PluginRecord> DiscoverPlugins()
 	{

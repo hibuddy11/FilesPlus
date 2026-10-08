@@ -40,6 +40,7 @@
     <PackageVersion Include="Microsoft.WindowsAppSDK.Widgets" Version="2.0.5" />
     <PackageVersion Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
     <PackageVersion Include="TagLibSharp" Version="2.3.0" />
+    <PackageVersion Include="TinyPinyin" Version="1.1.0" />
     <PackageVersion Include="UTF.Unknown" Version="2.7.0" />
     <PackageVersion Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
     <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.335" />

@@ -20,4 +20,7 @@ public interface IFilesPluginHost
 
 	/// <summary>Writes an error to the app log.</summary>
 	void LogError(string pluginId, string message, Exception? exception = null);
+
+	/// <summary>Opens a file or folder with the system default handler (shell open).</summary>
+	void OpenPath(string path);
 }
