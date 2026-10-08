@@ -25,7 +25,7 @@ internal sealed partial class QuickSearchWindow
 		}
 		else if (e.Key is VirtualKey.Enter)
 		{
-			OpenResult(resultList.SelectedItem as SearchEntry ?? results.FirstOrDefault());
+			OpenResult(SelectedEntry ?? results.FirstOrDefault());
 			e.Handled = true;
 		}
 		else if (e.Key is VirtualKey.Down && results.Count > 0)
@@ -37,7 +37,12 @@ internal sealed partial class QuickSearchWindow
 	}
 
 	private void ResultList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
-		=> OpenResult(resultList.SelectedItem as SearchEntry);
+		=> OpenResult(SelectedEntry);
+
+	private SearchEntry? SelectedEntry
+		=> resultList.SelectedIndex >= 0 && resultList.SelectedIndex < results.Count
+			? results[resultList.SelectedIndex]
+			: null;
 
 	private async Task RunFilterAsync(string query)
 	{
@@ -61,12 +66,21 @@ internal sealed partial class QuickSearchWindow
 		if (version != filterVersion)
 			return;
 
-		results = filtered;
-		resultList.ItemsSource = filtered;
-		resultList.SelectedIndex = filtered.Count > 0 ? 0 : -1;
-		statusText.Text = string.IsNullOrWhiteSpace(query)
-			? $"已索引 {entries.Count} 项"
-			: $"匹配 {filtered.Count} 项（已索引 {entries.Count} 项）";
+		try
+		{
+			results = filtered;
+			// Bind plain strings: plugin-assembly element types can fail to marshal across the
+			// assembly-load-context boundary when assigned to ItemsSource (E_INVALIDARG).
+			resultList.ItemsSource = filtered.Select(x => x.ToString()).ToList();
+			resultList.SelectedIndex = filtered.Count > 0 ? 0 : -1;
+			statusText.Text = string.IsNullOrWhiteSpace(query)
+				? $"已索引 {entries.Count} 项"
+				: $"匹配 {filtered.Count} 项（已索引 {entries.Count} 项）";
+		}
+		catch (Exception ex)
+		{
+			host.LogError("files.quicksearch", "Failed to update the result list.", ex);
+		}
 	}
 
 	private static List<SearchEntry> Filter(List<SearchEntry> source, string query)
