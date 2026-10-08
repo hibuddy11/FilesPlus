@@ -44,7 +44,18 @@ internal sealed partial class QuickSearchWindow
 		var version = ++filterVersion;
 		var source = entries;
 
-		var filtered = await Task.Run(() => Filter(source, query));
+		List<SearchEntry> filtered;
+		try
+		{
+			filtered = await Task.Run(() => Filter(source, query));
+		}
+		catch (Exception ex)
+		{
+			// Scoring lazily touches the pinyin library for the first time; a load failure must
+			// not surface as an unobserved task exception (the host exits on those).
+			host.LogError("files.quicksearch", "Filtering failed.", ex);
+			return;
+		}
 
 		// A newer keystroke superseded this pass
 		if (version != filterVersion)

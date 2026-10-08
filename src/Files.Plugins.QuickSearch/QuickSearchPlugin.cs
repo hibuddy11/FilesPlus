@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Files.Plugins;
+using TinyPinyin;
 
 namespace Files.Plugins.QuickSearch;
 
@@ -22,6 +23,18 @@ public sealed class QuickSearchPlugin : IFilesPlugin, IContextMenuContributor
 	public Task InitializeAsync(IFilesPluginHost host, CancellationToken cancellationToken)
 	{
 		this.host = host;
+
+		// Warm up the pinyin library here so a load failure surfaces (and is logged) during
+		// initialization instead of crashing on the first keystroke.
+		try
+		{
+			_ = PinyinHelper.IsChinese('测');
+		}
+		catch (Exception ex)
+		{
+			host.LogError(Id, "The pinyin library failed to load; pinyin matching is disabled.", ex);
+		}
+
 		return Task.CompletedTask;
 	}
 
@@ -41,7 +54,15 @@ public sealed class QuickSearchPlugin : IFilesPlugin, IContextMenuContributor
 				Glyph = "\uE721",
 				Execute = () =>
 				{
-					new QuickSearchWindow(host, directory).Show();
+					try
+					{
+						new QuickSearchWindow(host, directory).Show();
+					}
+					catch (Exception ex)
+					{
+						host.LogError(Id, "Failed to open the quick search window.", ex);
+					}
+
 					return Task.CompletedTask;
 				},
 			},

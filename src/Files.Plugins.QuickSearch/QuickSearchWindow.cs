@@ -38,7 +38,14 @@ internal sealed partial class QuickSearchWindow
 		{
 			Title = $"快速搜索 - {Path.GetFileName(rootDirectory.TrimEnd(Path.DirectorySeparatorChar))}",
 		};
-		window.AppWindow.Resize(new(900, 560));
+		try
+		{
+			window.AppWindow.Resize(new(900, 560));
+		}
+		catch (Exception)
+		{
+			// The default size is acceptable when resizing fails
+		}
 
 		searchBox = new TextBox()
 		{
@@ -82,18 +89,26 @@ internal sealed partial class QuickSearchWindow
 
 	public void Show()
 	{
+		// Focus after the window is active; focusing before activation is unreliable
+		window.Activated += (_, _) => searchBox.Focus(FocusState.Programmatic);
 		window.Activate();
-		searchBox.Focus(FocusState.Programmatic);
 
 		statusText.Text = "正在建立索引…";
 		_ = Task.Run(() =>
 		{
-			var scanned = DirectoryScanner.Scan(rootDirectory);
-			window.DispatcherQueue.TryEnqueue(() =>
+			try
 			{
-				entries = scanned;
-				_ = RunFilterAsync(searchBox.Text);
-			});
+				var scanned = DirectoryScanner.Scan(rootDirectory);
+				window.DispatcherQueue.TryEnqueue(() =>
+				{
+					entries = scanned;
+					_ = RunFilterAsync(searchBox.Text);
+				});
+			}
+			catch (Exception ex)
+			{
+				window.DispatcherQueue.TryEnqueue(() => host.LogError("files.quicksearch", "Directory scan failed.", ex));
+			}
 		});
 	}
 }
