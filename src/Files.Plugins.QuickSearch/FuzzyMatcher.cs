@@ -6,7 +6,7 @@ namespace Files.Plugins.QuickSearch;
 /// <summary>
 /// fzf-style fuzzy matcher (the scoring ideas follow fzf/Lertaro): a query matches a target as a
 /// subsequence; the score rewards consecutive runs, word-boundary hits and leading matches, and
-/// penalizes gaps. CJK characters match directly, so pinyin matching is done by scoring the
+/// penalizes gaps. CJK characters match directly; pinyin matching scores the precomputed
 /// pinyin aliases of the name as additional candidate targets.
 /// </summary>
 internal static class FuzzyMatcher

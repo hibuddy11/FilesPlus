@@ -822,6 +822,16 @@ namespace Files.App.Views.Layouts
 			return shellContextMenuItemCancellationToken.Token;
 		}
 
+		/// <summary>
+		/// The Opening handlers build the menu asynchronously; when one bails out early or throws
+		/// before building, the menu stays open with no content - a blank box. Close it instead.
+		/// </summary>
+		private static void HideIfEmpty(MenuFlyout? flyout)
+		{
+			if (flyout?.IsOpen is true && flyout.Items.Count == 0)
+				flyout.Hide();
+		}
+
 		[DynamicWindowsRuntimeCast(typeof(MenuFlyout))]
 		private async void ItemContextFlyout_Opening(object? sender, object e)
 		{
@@ -908,12 +918,16 @@ namespace Files.App.Views.Layouts
 				}
 
 				host.FinalizePrimaryRowPosition();
-			}
-			catch (Exception error)
-			{
+				}
+				catch (Exception error)
+				{
 				App.Logger?.LogWarning(error, "Failed to build the item context flyout.");
-			}
-		}
+				}
+				finally
+				{
+				HideIfEmpty(sender as MenuFlyout);
+				}
+				}
 
 		[DynamicWindowsRuntimeCast(typeof(Style))]
 		[DynamicWindowsRuntimeCast(typeof(Geometry))]
@@ -1148,6 +1162,10 @@ namespace Files.App.Views.Layouts
 				catch (Exception error)
 				{
 				App.Logger?.LogWarning(error, "Failed to build the base context flyout.");
+				}
+				finally
+				{
+				HideIfEmpty(sender as MenuFlyout);
 				}
 				}
 

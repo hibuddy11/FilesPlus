@@ -10,10 +10,67 @@ namespace Files.Plugins.QuickSearch;
 
 internal sealed partial class QuickSearchWindow
 {
+	private int filterRunId;
+
+	/// <summary>
+	/// Filters the current snapshot on a worker thread; only the latest run wins.
+	/// </summary>
+	private async void RequestFilterRun(string query)
+	{
+		var version = ++filterRunId;
+		var snapshot = index.Snapshot();
+		MatchResult result;
+		try
+		{
+			result = await Task.Run(() => Filter(snapshot, query));
+		}
+		catch (Exception ex)
+		{
+			// Filtering may first touch the pinyin library; a load failure must not surface as an
+			// unobserved task exception (the host exits on those).
+			host.LogError("files.quicksearch", "Filtering failed.", ex);
+			return;
+		}
+
+		// A newer filter superseded this pass
+		if (version != filterRunId)
+			return;
+
+		UpdateResults(result, query);
+	}
+
+	/// <summary>Applies a finished filter result to the UI.</summary>
+	private void UpdateResults(MatchResult result, string query)
+	{
+		latestResult = result;
+		try
+		{
+			// Bind plain strings: plugin-assembly element types can fail to marshal across the
+			// assembly-load-context boundary when assigned to ItemsSource (E_INVALIDARG).
+			resultList.ItemsSource = result.Indices.Select(DisplayEntry).ToList();
+			resultList.SelectedIndex = result.Count > 0 ? 0 : -1;
+		}
+		catch (Exception ex)
+		{
+			host.LogError("files.quicksearch", "Failed to update the result list.", ex);
+			return;
+		}
+
+		var indexed = index.Count;
+		statusText.Text = query.Length is 0
+			? (result.Count > 0
+				? $"显示前 {result.Count} 项（已索引 {indexed:N0} 项）"
+				: $"已索引 {indexed:N0} 项")
+			: (result.Count > 0
+				? $"匹配 {result.Count:N0} 项，显示前 {Math.Min(result.Count, MaxResults)} 项（已索引 {indexed:N0} 项）"
+				: $"无匹配（已索引 {indexed:N0} 项）");
+		if (isScanning)
+			statusText.Text += "，扫描中…";
+	}
+
 	private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
 	{
-		debounceTimer.Stop();
-		debounceTimer.Start();
+		RequestFilter();
 	}
 
 	private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -25,10 +82,10 @@ internal sealed partial class QuickSearchWindow
 		}
 		else if (e.Key is VirtualKey.Enter)
 		{
-			OpenResult(SelectedEntry ?? results.FirstOrDefault());
+			OpenResult(SelectedEntry);
 			e.Handled = true;
 		}
-		else if (e.Key is VirtualKey.Down && results.Count > 0)
+		else if (e.Key is VirtualKey.Down && latestResult.Count > 0)
 		{
 			resultList.Focus(FocusState.Programmatic);
 			resultList.SelectedIndex = 0;
@@ -36,95 +93,27 @@ internal sealed partial class QuickSearchWindow
 		}
 	}
 
+	private int? SelectedEntry
+		=> resultList.SelectedIndex >= 0 && resultList.SelectedIndex < latestResult.Indices.Length
+			? latestResult.Indices[resultList.SelectedIndex]
+			: null;
+
 	private void ResultList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
 		=> OpenResult(SelectedEntry);
 
-	private SearchEntry? SelectedEntry
-		=> resultList.SelectedIndex >= 0 && resultList.SelectedIndex < results.Count
-			? results[resultList.SelectedIndex]
-			: null;
-
-	private async Task RunFilterAsync(string query)
+	private void OpenResult(int? entryIndex)
 	{
-		var version = ++filterVersion;
-		// Snapshot: the scan merges new entries into the list on the UI thread while this runs
-		var source = entries.ToArray();
-
-		List<SearchEntry> filtered;
-		try
-		{
-			filtered = await Task.Run(() => Filter(source, query));
-		}
-		catch (Exception ex)
-		{
-			// Scoring lazily touches the pinyin library for the first time; a load failure must
-			// not surface as an unobserved task exception (the host exits on those).
-			host.LogError("files.quicksearch", "Filtering failed.", ex);
-			return;
-		}
-
-		// A newer keystroke superseded this pass
-		if (version != filterVersion)
+		if (entryIndex is not { } entry)
 			return;
 
 		try
 		{
-			results = filtered;
-			// Bind plain strings: plugin-assembly element types can fail to marshal across the
-			// assembly-load-context boundary when assigned to ItemsSource (E_INVALIDARG).
-			resultList.ItemsSource = filtered.Select(x => x.ToString()).ToList();
-			resultList.SelectedIndex = filtered.Count > 0 ? 0 : -1;
-			statusText.Text = string.IsNullOrWhiteSpace(query)
-				? $"已索引 {entries.Count} 项"
-				: $"匹配 {filtered.Count} 项（已索引 {entries.Count} 项）";
-			if (isScanning)
-				statusText.Text += "，扫描中…";
-		}
-		catch (Exception ex)
-		{
-			host.LogError("files.quicksearch", "Failed to update the result list.", ex);
-		}
-	}
-
-	private static List<SearchEntry> Filter(IReadOnlyList<SearchEntry> source, string query)
-	{
-		if (string.IsNullOrWhiteSpace(query))
-		{
-			return source
-				.OrderBy(x => x.IsDirectory ? 0 : 1)
-				.ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
-				.Take(MaxResults)
-				.ToList();
-		}
-
-		var matches = new List<(SearchEntry Entry, int Score)>(capacity: 256);
-		foreach (var entry in source)
-		{
-			if (entry.Score(query) is { } score)
-				matches.Add((entry, score));
-		}
-
-		return matches
-			.OrderByDescending(x => x.Score)
-			.ThenBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase)
-			.Take(MaxResults)
-			.Select(x => x.Entry)
-			.ToList();
-	}
-
-	private void OpenResult(SearchEntry? entry)
-	{
-		if (entry is null)
-			return;
-
-		try
-		{
-			host.OpenPath(entry.FullPath);
+			host.OpenPath(index.GetFullPath(entry));
 			window.Close();
 		}
 		catch (Exception ex)
 		{
-			host.LogError("files.quicksearch", $"Failed to open '{entry.FullPath}'.", ex);
+			host.LogError("files.quicksearch", $"Failed to open '{index.GetRelativePath(entry)}'.", ex);
 		}
 	}
 }

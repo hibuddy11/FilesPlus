@@ -6,33 +6,39 @@ using System.IO;
 namespace Files.Plugins.QuickSearch;
 
 /// <summary>
-/// Walks a directory tree into the in-memory search index. Skips junctions/symlinks to avoid
-/// cycles, ignores unreadable locations, and stops at the entry cap.
+/// Walks a directory tree straight into the search index. Skips junctions/symlinks to avoid
+/// cycles, ignores unreadable locations, and stops at the index entry cap.
 /// </summary>
 internal static class DirectoryScanner
 {
-	public const int MaxEntries = 500_000;
-
-	/// <summary>
-	/// Lazily walks the tree so the caller can merge entries into the live index while the scan
-	/// is still running; the caller enforces <see cref="MaxEntries"/>.
-	/// </summary>
-	public static IEnumerable<SearchEntry> Scan(string root)
+	public static void ScanInto(string root, SearchIndex index, CancellationToken token)
 	{
-		var pending = new Stack<(string Path, string Relative)>();
-		pending.Push((root, string.Empty));
+		var pending = new Stack<(string Path, int ParentIndex)>();
+		pending.Push((Path.TrimEndingDirectorySeparator(root), -1));
 
-		while (pending.Count > 0)
+		while (pending.Count > 0 && !token.IsCancellationRequested && index.Count < SearchIndex.MaxEntries)
 		{
-			var (directory, relative) = pending.Pop();
+			var (directory, parentIndex) = pending.Pop();
 
-			// Iterator methods cannot yield inside try/catch, so each directory's children are
-			// collected safely first and yielded afterwards (one batch per directory).
-			List<SearchEntry> children;
-			List<(string Path, string Relative)> subDirectories;
+			List<(string FullName, int SelfIndex)>? subDirectories;
 			try
 			{
-				(children, subDirectories) = EnumerateDirectory(directory, relative);
+				var info = new DirectoryInfo(directory);
+				subDirectories = [];
+
+				foreach (var sub in info.EnumerateDirectories())
+				{
+					// Reparse points (junctions, symlinks) would revisit earlier trees
+					if (sub.Attributes.HasFlag(FileAttributes.ReparsePoint))
+						continue;
+
+					var selfIndex = index.Append(sub.Name, parentIndex, isDirectory: true, SearchIndex.ComputeAlias(sub.Name));
+					if (selfIndex >= 0)
+						subDirectories.Add((sub.FullName, selfIndex));
+				}
+
+				foreach (var file in info.EnumerateFiles())
+					index.Append(file.Name, parentIndex, isDirectory: false, SearchIndex.ComputeAlias(file.Name));
 			}
 			catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException or IOException)
 			{
@@ -40,45 +46,11 @@ internal static class DirectoryScanner
 				continue;
 			}
 
-			foreach (var child in children)
-				yield return child;
-
-			foreach (var sub in subDirectories)
-				pending.Push(sub);
-		}
-	}
-
-	private static (List<SearchEntry> Children, List<(string Path, string Relative)> SubDirectories) EnumerateDirectory(string directory, string relative)
-	{
-		var children = new List<SearchEntry>();
-		var subDirectories = new List<(string, string)>();
-		var info = new DirectoryInfo(directory);
-
-		foreach (var sub in info.EnumerateDirectories())
-		{
-			// Reparse points (junctions, symlinks) would revisit earlier trees
-			if (sub.Attributes.HasFlag(FileAttributes.ReparsePoint))
-				continue;
-
-			children.Add(ToEntry(sub, relative, isDirectory: true));
-			subDirectories.Add((sub.FullName, Combine(relative, sub.Name)));
+			foreach (var (fullName, selfIndex) in subDirectories!)
+				pending.Push((fullName, selfIndex));
 		}
 
-		foreach (var file in info.EnumerateFiles())
-			children.Add(ToEntry(file, relative, isDirectory: false));
-
-		return (children, subDirectories);
+		// Publish the trailing partial chunk so everything scanned becomes visible
+		index.Flush();
 	}
-
-	private static SearchEntry ToEntry(FileSystemInfo info, string parentRelative, bool isDirectory)
-		=> new()
-		{
-			Name = info.Name,
-			FullPath = info.FullName,
-			RelativePath = Combine(parentRelative, info.Name),
-			IsDirectory = isDirectory,
-		};
-
-	private static string Combine(string parentRelative, string name)
-		=> parentRelative.Length is 0 ? name : $"{parentRelative}\\{name}";
 }

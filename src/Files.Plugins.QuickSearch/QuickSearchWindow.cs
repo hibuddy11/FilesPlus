@@ -5,9 +5,14 @@ using Files.Plugins;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
-using System.Diagnostics;
 
 namespace Files.Plugins.QuickSearch;
+
+/// <summary>Flat filter result: global entry indices in display order plus the total match count.</summary>
+internal readonly record struct MatchResult(int[] Indices, int Count)
+{
+	public static readonly MatchResult Empty = new(Array.Empty<int>(), 0);
+}
 
 /// <summary>
 /// The quick-search window: scans the target directory into memory once (Lertaro-style in-memory
@@ -26,10 +31,10 @@ internal sealed partial class QuickSearchWindow
 	private readonly TextBlock statusText;
 	private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer debounceTimer;
 
-	private readonly List<SearchEntry> entries = [];
-	private List<SearchEntry> results = [];
+	private SearchIndex index = null!;
+	private MatchResult latestResult = MatchResult.Empty;
 	private volatile bool isScanning;
-	private int filterVersion;
+	private CancellationTokenSource? scanCts;
 
 	public QuickSearchWindow(IFilesPluginHost host, string rootDirectory)
 	{
@@ -79,14 +84,21 @@ internal sealed partial class QuickSearchWindow
 		Grid.SetRow(statusText, 2);
 		window.Content = root;
 
+		index = new SearchIndex(rootDirectory);
+		index.Published += Index_Published;
+
 		debounceTimer = window.DispatcherQueue.CreateTimer();
 		debounceTimer.Interval = TimeSpan.FromMilliseconds(100);
 		debounceTimer.Tick += (_, _) =>
 		{
 			debounceTimer.Stop();
-			_ = RunFilterAsync(searchBox.Text);
+			RequestFilterRun(searchBox.Text);
 		};
-		window.Closed += (_, _) => debounceTimer.Stop();
+		window.Closed += (_, _) =>
+		{
+			debounceTimer.Stop();
+			scanCts?.Cancel();
+		};
 	}
 
 	public void Show()
@@ -97,39 +109,20 @@ internal sealed partial class QuickSearchWindow
 
 		statusText.Text = "正在建立索引…";
 		isScanning = true;
-		_ = Task.Run(ScanAndStreamResults);
+		scanCts = new CancellationTokenSource();
+		var token = scanCts.Token;
+		_ = Task.Run(() => ScanIntoIndex(token));
 	}
 
 	/// <summary>
-	/// Streams the scan into the index in batches so results are searchable long before the
-	/// whole tree has been walked.
+	/// Walks the whole tree into the chunked index on a worker thread; each published chunk makes
+	/// its entries searchable immediately through the Published callback.
 	/// </summary>
-	private void ScanAndStreamResults()
+	private void ScanIntoIndex(CancellationToken token)
 	{
 		try
 		{
-			var batch = new List<SearchEntry>(capacity: 4096);
-			var lastFlush = Stopwatch.StartNew();
-			var scanned = 0;
-
-			foreach (var entry in DirectoryScanner.Scan(rootDirectory))
-			{
-				if (scanned >= DirectoryScanner.MaxEntries)
-					break;
-
-				scanned++;
-				batch.Add(entry);
-
-				if (batch.Count < 4096 && lastFlush.ElapsedMilliseconds < 400)
-					continue;
-
-				FlushBatch(batch);
-				batch = [];
-				lastFlush.Restart();
-			}
-
-			if (batch.Count > 0)
-				FlushBatch(batch);
+			DirectoryScanner.ScanInto(rootDirectory, index, token);
 		}
 		catch (Exception ex)
 		{
@@ -140,22 +133,22 @@ internal sealed partial class QuickSearchWindow
 		window.DispatcherQueue.TryEnqueue(() =>
 		{
 			isScanning = false;
-			_ = RunFilterAsync(searchBox.Text);
+			RequestFilterRun(searchBox.Text);
 		});
 	}
 
-	private void FlushBatch(List<SearchEntry> batch)
-	{
-		// Hand the UI thread a snapshot it owns
-		var chunk = batch.ToArray();
-		window.DispatcherQueue.TryEnqueue(() =>
+	/// <summary>Runs the empty filter once per published chunk while scanning.</summary>
+	private void Index_Published()
+		=> window.DispatcherQueue.TryEnqueue(() =>
 		{
-			var remaining = DirectoryScanner.MaxEntries - entries.Count;
-			if (remaining <= 0)
-				return;
-
-			entries.AddRange(chunk.Length <= remaining ? chunk : chunk[..remaining]);
-			_ = RunFilterAsync(searchBox.Text);
+			if (searchBox.Text.Length is 0)
+				UpdateResults(MatchResult.Empty, string.Empty);
 		});
+
+	/// <summary>Schedules a debounced filter run from the current search box text.</summary>
+	private void RequestFilter()
+	{
+		debounceTimer.Stop();
+		debounceTimer.Start();
 	}
 }
