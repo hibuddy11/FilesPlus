@@ -542,11 +542,17 @@ internal sealed class TodoWindow : Window
 
 		var content = new StackPanel { Spacing = 6 };
 		content.Children.Add(bodyLine);
-		if (!string.IsNullOrEmpty(task.Created))
+		// Pending rows show the creation timestamp; done rows show creation + completion timestamps.
+		List<string> metaParts = [];
+		if (task.CreatedDisplay.Length > 0)
+			metaParts.Add($"创建 {task.CreatedDisplay}");
+		if (task.IsCompleted && task.CompletedDisplay.Length > 0)
+			metaParts.Add($"完成 {task.CompletedDisplay}");
+		if (metaParts.Count > 0)
 		{
 			content.Children.Add(new TextBlock
 			{
-				Text = task.Created.Length >= 10 ? task.Created[5..] : task.Created,
+				Text = string.Join(" · ", metaParts),
 				FontSize = 11,
 				Opacity = 0.55,
 				Margin = new Thickness(30, 0, 0, 0),

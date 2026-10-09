@@ -34,6 +34,12 @@ public sealed class TodoTask
 	/// <summary>Creation date (yyyy-MM-dd), or null.</summary>
 	public string? Created { get; internal set; }
 
+	/// <summary>Creation time of day (HH:mm) stored as a custom todo.txt extension key, or null.</summary>
+	public string? CreatedTime { get; internal set; }
+
+	/// <summary>Completion time of day (HH:mm) stored as a custom todo.txt extension key, or null.</summary>
+	public string? CompletedTime { get; internal set; }
+
 	/// <summary>Task text with priority/dates/att: keys stripped.</summary>
 	public string Body { get; internal set; } = string.Empty;
 
@@ -41,6 +47,14 @@ public sealed class TodoTask
 
 	/// <summary>Original text of a plain line we never modified, so foreign lines are written back verbatim.</summary>
 	public string? RawLine { get; internal set; }
+
+	/// <summary>Creation timestamp for display ("yyyy-MM-dd HH:mm", or just the date when no time was captured).</summary>
+	public string CreatedDisplay
+		=> Created is null ? string.Empty : CreatedTime is null ? Created : $"{Created} {CreatedTime}";
+
+	/// <summary>Completion timestamp for display ("yyyy-MM-dd HH:mm", or just the date when no time was captured).</summary>
+	public string CompletedDisplay
+		=> CompletedDate is null ? string.Empty : CompletedTime is null ? CompletedDate : $"{CompletedDate} {CompletedTime}";
 
 	internal string Format()
 	{
@@ -57,6 +71,10 @@ public sealed class TodoTask
 		if (!string.IsNullOrEmpty(Created))
 			sb.Append(Created).Append(' ');
 		sb.Append(Body);
+		if (CreatedTime is not null)
+			sb.Append(" created-time:").Append(CreatedTime);
+		if (IsCompleted && CompletedTime is not null)
+			sb.Append(" completed-time:").Append(CompletedTime);
 		foreach (var attachment in Attachments)
 			sb.Append(" att:").Append(attachment.FileName);
 
@@ -65,6 +83,10 @@ public sealed class TodoTask
 
 	private static readonly System.Text.RegularExpressions.Regex AttRegex =
 		new(@"(?:^|\s)att:(?<file>\S+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+	// created-time:HH:mm / completed-time:HH:mm — custom todo.txt extension keys other apps simply preserve.
+	private static readonly System.Text.RegularExpressions.Regex TimeKeyRegex =
+		new(@"(?:^|\s)(?<key>created-time|completed-time):(?<value>\d{1,2}:\d{2})(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
 	/// <summary>Parses one todo.txt line. Never returns null for non-empty input.</summary>
 	public static TodoTask Parse(string line)
@@ -95,6 +117,19 @@ public sealed class TodoTask
 			rest = rest[10..].TrimStart();
 		}
 
+		foreach (System.Text.RegularExpressions.Match match in TimeKeyRegex.Matches(rest))
+		{
+			var value = match.Groups["value"].Value;
+			if (!TimeOnly.TryParseExact(value, ["H:mm", "HH:mm"], out _))
+				continue;
+
+			if (match.Groups["key"].Value == "created-time")
+				task.CreatedTime = value;
+			else
+				task.CompletedTime = value;
+		}
+		rest = TimeKeyRegex.Replace(rest, " ").Trim();
+
 		foreach (System.Text.RegularExpressions.Match match in AttRegex.Matches(rest))
 			task.Attachments.Add(new TodoAttachment { FileName = match.Groups["file"].Value });
 		rest = AttRegex.Replace(rest, " ").Trim();
@@ -102,7 +137,12 @@ public sealed class TodoTask
 		task.Body = rest;
 
 		// Plain unmodified line (nothing we would reformat): keep verbatim for round-tripping
-		if (!task.IsCompleted && task.Priority is null && task.Created is null && task.Attachments.Count == 0)
+		if (!task.IsCompleted
+			&& task.Priority is null
+			&& task.Created is null
+			&& task.CreatedTime is null
+			&& task.CompletedTime is null
+			&& task.Attachments.Count == 0)
 			task.RawLine = line;
 
 		return task;
@@ -262,6 +302,7 @@ public sealed class TodoStore
 			var task = new TodoTask
 			{
 				Created = DateTime.Now.ToString("yyyy-MM-dd"),
+				CreatedTime = DateTime.Now.ToString("HH:mm"),
 				Body = body.Trim(),
 			};
 			if (attachments is not null)
@@ -286,6 +327,7 @@ public sealed class TodoStore
 			Pending.Remove(task);
 			task.IsCompleted = true;
 			task.CompletedDate = DateTime.Now.ToString("yyyy-MM-dd");
+			task.CompletedTime = DateTime.Now.ToString("HH:mm");
 			task.RawLine = null;
 			Done.Add(task);
 			await WriteBothAsync();
@@ -304,6 +346,7 @@ public sealed class TodoStore
 			Done.Remove(task);
 			task.IsCompleted = false;
 			task.CompletedDate = null;
+			task.CompletedTime = null;
 			task.RawLine = null;
 			Pending.Add(task);
 			await WriteBothAsync();
