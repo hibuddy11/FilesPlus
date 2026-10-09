@@ -18,6 +18,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!--  Window/taskbar icon; deployed next to the plugin DLL and loaded via AppWindow.SetIcon  -->
+        <None Include="Assets\Todo.ico" Link="Todo.ico" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
         <!--  WinAppSDK is only needed for compiling the UI; at runtime the host already provides
               every assembly, so its runtime assets are excluded from the copied plugin output.  -->
         <PackageReference Include="Microsoft.WindowsAppSDK" ExcludeAssets="runtime" />
@@ -31,6 +36,7 @@
         <ItemGroup>
             <PluginOutput Include="$(TargetDir)*.dll" />
             <PluginOutput Include="$(TargetDir)$(TargetName).deps.json" />
+            <PluginOutput Include="$(TargetDir)Todo.ico" />
         </ItemGroup>
         <PropertyGroup>
             <AppPluginsDir>$(MSBuildThisProjectDirectory)..\Files.App\bin\Unpackaged\$(Platform)\$(Configuration)\net10.0-windows10.0.26100.0\win-$(Platform)\plugins\</AppPluginsDir>

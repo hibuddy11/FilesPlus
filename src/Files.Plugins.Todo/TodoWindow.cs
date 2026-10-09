@@ -61,6 +61,10 @@ internal sealed class TodoWindow : Window
 
 		Title = "待办";
 		AppWindow.Resize(LoadWindowSize(520, 780));
+		// Title bar / taskbar icon; the ico ships next to the plugin DLL.
+		var pluginDir = Path.GetDirectoryName(typeof(TodoWindow).Assembly.Location);
+		if (pluginDir is not null && File.Exists(Path.Combine(pluginDir, "Todo.ico")))
+			AppWindow.SetIcon(Path.Combine(pluginDir, "Todo.ico"));
 		SystemBackdrop = new MicaBackdrop();
 
 		inputBox = BuildInputBox();
