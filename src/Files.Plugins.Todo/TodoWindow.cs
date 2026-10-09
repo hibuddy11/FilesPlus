@@ -66,6 +66,9 @@ internal sealed class TodoWindow : Window
 			HorizontalAlignment = HorizontalAlignment.Stretch,
 			HorizontalContentAlignment = HorizontalAlignment.Stretch,
 		};
+		// The content tree is built exactly once; ReloadUI only clears/fills the shared panels.
+		// Replacing Expander.Content while a Click event is dispatched from it crashes WinUI (0x80070057).
+		doneExpander.Content = BuildDoneContent();
 		statusText = new TextBlock
 		{
 			Opacity = 0.65,
@@ -124,12 +127,12 @@ internal sealed class TodoWindow : Window
 			Key = VirtualKey.V,
 			Modifiers = VirtualKeyModifiers.Control,
 		};
-		pasteAccelerator.Invoked += async (_, args) =>
+		pasteAccelerator.Invoked += (_, args) =>
 		{
 			if (!ClipboardHasImage())
 				return;
 			args.Handled = true;
-			await PasteImageAsync();
+			RunSafe(PasteImageAsync);
 		};
 
 		var root = new Grid
@@ -258,7 +261,7 @@ internal sealed class TodoWindow : Window
 			Padding = new Thickness(10, 0, 10, 0),
 		};
 		Tip(pasteButton, "粘贴剪贴板截图（附加到选中任务，未选中则新建）");
-		pasteButton.Click += async (_, _) => await PasteImageAsync();
+		pasteButton.Click += (_, _) => RunSafe(PasteImageAsync);
 
 		var row = new Grid
 		{
@@ -284,14 +287,16 @@ internal sealed class TodoWindow : Window
 			CornerRadius = new CornerRadius(8),
 			FontSize = 14,
 		};
-		box.KeyDown += async (_, args) =>
+		box.KeyDown += (_, args) =>
 		{
 			if (args.Key is VirtualKey.Enter && !string.IsNullOrWhiteSpace(box.Text))
-			{
-				await store.AddAsync(box.Text);
-				box.Text = string.Empty;
-				await ReloadAsync();
-			}
+				RunSafe(async () =>
+				{
+					var text = box.Text;
+					await store.AddAsync(text);
+					box.Text = string.Empty;
+					await ReloadAsync();
+				});
 		};
 		return box;
 	}
@@ -341,7 +346,7 @@ internal sealed class TodoWindow : Window
 			MinWidth = 0,
 		};
 		Tip(refreshButton, "重新读取 todo.txt（外部修改后同步）");
-		refreshButton.Click += async (_, _) => await ReloadAsync();
+		refreshButton.Click += (_, _) => RunSafe(ReloadAsync);
 
 		var changeDirButton = new Button
 		{
@@ -350,7 +355,7 @@ internal sealed class TodoWindow : Window
 			MinWidth = 0,
 		};
 		Tip(changeDirButton, "更改数据目录（todo.txt 所在位置）");
-		changeDirButton.Click += async (_, _) => await ChangeDataDirectoryAsync();
+		changeDirButton.Click += (_, _) => RunSafe(ChangeDataDirectoryAsync);
 
 		var buttons = new StackPanel
 		{
@@ -397,14 +402,26 @@ internal sealed class TodoWindow : Window
 		try
 		{
 			await store.ReloadAsync();
+			ReloadUI();
 		}
 		catch (Exception ex)
 		{
 			SetStatus($"读取失败：{ex.Message}");
-			return;
 		}
+	}
 
-		ReloadUI();
+	// Async event handlers must never let exceptions escape to the dispatcher: that tears the process down.
+	// Fire-and-forget by design: the whole body is guarded and failures surface on the status line.
+	private async void RunSafe(Func<Task> action)
+	{
+		try
+		{
+			await action();
+		}
+		catch (Exception ex)
+		{
+			SetStatus($"操作失败：{ex.Message}");
+		}
 	}
 
 	private void ReloadUI()
@@ -421,7 +438,6 @@ internal sealed class TodoWindow : Window
 		emptyState.Visibility = store.Pending.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 		doneHeaderText.Text = $"已完成 ({store.Done.Count})";
 		doneExpander.Visibility = store.Done.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-		doneExpander.Content = BuildDoneContent();
 
 		UpdateDirectoryText();
 
@@ -450,11 +466,11 @@ internal sealed class TodoWindow : Window
 			Padding = new Thickness(0, 6, 0, 0),
 			HorizontalAlignment = HorizontalAlignment.Left,
 		};
-		clearButton.Click += async (_, _) =>
+		clearButton.Click += (_, _) => RunSafe(async () =>
 		{
 			await store.ClearDoneAsync();
 			await ReloadAsync();
-		};
+		});
 		panel.Children.Add(clearButton);
 
 		return panel;
@@ -500,8 +516,8 @@ internal sealed class TodoWindow : Window
 			MinWidth = 0,
 			Margin = new Thickness(0, 2, 0, 0),
 		};
-		checkBox.Checked += async (_, _) => await ToggleAsync(task, complete: true);
-		checkBox.Unchecked += async (_, _) => await ToggleAsync(task, complete: false);
+		checkBox.Checked += (_, _) => RunSafe(() => ToggleAsync(task, complete: true));
+		checkBox.Unchecked += (_, _) => RunSafe(() => ToggleAsync(task, complete: false));
 
 		var bodyBlock = new TextBlock
 		{
@@ -547,11 +563,11 @@ internal sealed class TodoWindow : Window
 			BorderThickness = new Thickness(0),
 		};
 		Tip(deleteButton, "删除任务");
-		deleteButton.Click += async (_, _) =>
+		deleteButton.Click += (_, _) => RunSafe(async () =>
 		{
 			await store.DeleteAsync(task);
 			await ReloadAsync();
-		};
+		});
 
 		var grid = new Grid
 		{
@@ -640,11 +656,11 @@ internal sealed class TodoWindow : Window
 			{
 				Text = level is { } p ? $"优先级 {p}" : "清除优先级",
 			};
-			item.Click += async (_, _) =>
+			item.Click += (_, _) => RunSafe(async () =>
 			{
 				await store.SetPriorityAsync(task, level);
 				await ReloadAsync();
-			};
+			});
 			flyout.Items.Add(item);
 		}
 
@@ -717,11 +733,11 @@ internal sealed class TodoWindow : Window
 				host.OpenPath(Path.GetDirectoryName(p) ?? p);
 		};
 		var remove = new MenuFlyoutItem { Text = "删除附件" };
-		remove.Click += async (_, _) =>
+		remove.Click += (_, _) => RunSafe(async () =>
 		{
 			await store.RemoveAttachmentAsync(task, attachment);
 			await ReloadAsync();
-		};
+		});
 		thumb.ContextFlyout = new MenuFlyout { Items = { openFolder, remove } };
 
 		return thumb;
@@ -742,14 +758,21 @@ internal sealed class TodoWindow : Window
 				return;
 			pending = null;
 
-			var newText = editBox.Text;
-			line.Children.RemoveAt(index);
-			line.Children.Insert(index, bodyBlock);
-
-			if (newText != task.Body && !string.IsNullOrWhiteSpace(newText))
+			try
 			{
-				await store.UpdateBodyAsync(task, newText);
-				await ReloadAsync();
+				var newText = editBox.Text;
+				line.Children.RemoveAt(index);
+				line.Children.Insert(index, bodyBlock);
+
+				if (newText != task.Body && !string.IsNullOrWhiteSpace(newText))
+				{
+					await store.UpdateBodyAsync(task, newText);
+					await ReloadAsync();
+				}
+			}
+			catch (Exception ex)
+			{
+				SetStatus($"保存失败：{ex.Message}");
 			}
 		}
 
