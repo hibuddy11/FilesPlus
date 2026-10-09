@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Files.Plugins;
+using System.IO;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -50,7 +51,7 @@ internal sealed class TodoWindow : Window
 		this.pluginId = pluginId;
 
 		Title = "待办";
-		AppWindow.Resize(new Windows.Graphics.SizeInt32(520, 780));
+		AppWindow.Resize(LoadWindowSize(520, 780));
 		SystemBackdrop = new MicaBackdrop();
 
 		inputBox = BuildInputBox();
@@ -92,6 +93,7 @@ internal sealed class TodoWindow : Window
 			wasActivated = true;
 			inputBox.Focus(FocusState.Programmatic);
 		};
+		Closed += (_, _) => SaveWindowSize();
 
 		UpdateDirectoryText();
 		_ = ReloadAsync();
@@ -587,6 +589,46 @@ internal sealed class TodoWindow : Window
 
 		card.Child = grid;
 		return card;
+	}
+
+	// --- Window size persistence ---
+
+	private string WindowSizeFilePath => Path.Combine(store.DataDirectory, "window.size");
+
+	private Windows.Graphics.SizeInt32 LoadWindowSize(int defaultWidth, int defaultHeight)
+	{
+		try
+		{
+			if (File.Exists(WindowSizeFilePath))
+			{
+				var parts = File.ReadAllText(WindowSizeFilePath).Split(' ');
+				if (parts.Length == 2
+					&& int.TryParse(parts[0], out var width)
+					&& int.TryParse(parts[1], out var height)
+					&& width is >= 320 and <= 4096
+					&& height is >= 400 and <= 4096)
+					return new Windows.Graphics.SizeInt32(width, height);
+			}
+		}
+		catch
+		{
+			// Size persistence is best-effort; fall back to the default size.
+		}
+
+		return new Windows.Graphics.SizeInt32(defaultWidth, defaultHeight);
+	}
+
+	private void SaveWindowSize()
+	{
+		try
+		{
+			var size = AppWindow.Size;
+			File.WriteAllText(WindowSizeFilePath, $"{size.Width} {size.Height}");
+		}
+		catch
+		{
+			// Ignore write failures (e.g. read-only data directory).
+		}
 	}
 
 	private void UpdateDirectoryText()
