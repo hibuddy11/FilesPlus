@@ -72,7 +72,7 @@ namespace Files.App.Data.Items
 			{
 				if (IsExpandableFolder)
 					return ChildItems ??= [];
-				if (Section == SectionType.Home)
+				if (Section is SectionType.Home or SectionType.Todo)
 					return null;
 				return ChildItems;
 			}
