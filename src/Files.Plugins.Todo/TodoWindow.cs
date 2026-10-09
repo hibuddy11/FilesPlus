@@ -259,7 +259,7 @@ internal sealed class TodoWindow : Window
 			VerticalAlignment = VerticalAlignment.Center,
 			Child = new FontIcon
 			{
-				Glyph = "\uE73E", // CheckMark
+				Glyph = "\uE9D5", // CheckList — matches the sidebar/plugin glyph
 				FontSize = 17,
 				Foreground = new SolidColorBrush(accent),
 			},
