@@ -41,7 +41,8 @@ namespace Files.App.Data.Contracts
 		CloudDrives,
 		Network,
 		WSL,
-		FileTag
+		FileTag,
+		Todo
 	}
 
 	public sealed class ContextMenuOptions

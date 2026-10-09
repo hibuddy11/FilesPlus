@@ -1736,6 +1736,9 @@
   <data name="ConsentDialogPrimaryButtonText" xml:space="preserve">
     <value>更新</value>
   </data>
+  <data name="Todo" xml:space="preserve">
+    <value>待办</value>
+  </data>
   <data name="Home" xml:space="preserve">
     <value>主页</value>
   </data>

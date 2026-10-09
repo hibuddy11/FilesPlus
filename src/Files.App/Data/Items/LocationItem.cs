@@ -54,7 +54,8 @@ namespace Files.App.Data.Items
 					currentPath.EndsWith(ShellLibraryItem.EXTENSION, StringComparison.OrdinalIgnoreCase) ||
 					currentPath == "Home" ||
 					currentPath == "ReleaseNotes" ||
-					currentPath == "Settings"
+					currentPath == "Settings" ||
+					currentPath == "Todo"
 					? Text
 					: currentPath;
 			}

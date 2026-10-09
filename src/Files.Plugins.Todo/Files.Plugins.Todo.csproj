@@ -1,0 +1,42 @@
+<!--  Copyright (c) Files Community. Licensed under the MIT License.  -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Configurations>Debug;Release</Configurations>
+        <Platforms>x86;x64;arm64</Platforms>
+        <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!--  Plugins are loose DLLs loaded from the plugins directory: bring package dependencies along  -->
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Files.Plugins.Abstractions\Files.Plugins.Abstractions.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!--  WinAppSDK is only needed for compiling the UI; at runtime the host already provides
+              every assembly, so its runtime assets are excluded from the copied plugin output.  -->
+        <PackageReference Include="Microsoft.WindowsAppSDK" ExcludeAssets="runtime" />
+    </ItemGroup>
+
+    <!--  Copies the built plugin next to the unpackaged app output so it is picked up from the
+          plugins directory at startup. The path mirrors Files.App's unpackaged OutDir (hard-coded
+          the same way pack-release.ps1 does). Unconditional so it works no matter whether the app
+          was built before or after this project.  -->
+    <Target Name="CopyToAppPluginsDirectory" AfterTargets="Build">
+        <ItemGroup>
+            <PluginOutput Include="$(TargetDir)*.dll" />
+            <PluginOutput Include="$(TargetDir)$(TargetName).deps.json" />
+        </ItemGroup>
+        <PropertyGroup>
+            <AppPluginsDir>$(MSBuildThisProjectDirectory)..\Files.App\bin\Unpackaged\$(Platform)\$(Configuration)\net10.0-windows10.0.26100.0\win-$(Platform)\plugins\</AppPluginsDir>
+        </PropertyGroup>
+        <MakeDir Directories="$(AppPluginsDir)" />
+        <Copy SourceFiles="@(PluginOutput)" DestinationFolder="$(AppPluginsDir)" SkipUnchangedFiles="true" />
+    </Target>
+
+</Project>

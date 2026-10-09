@@ -21,6 +21,9 @@ public interface IPluginService
 
 	/// <summary>Aggregated context-menu contributions from all enabled plugins. Failures are logged and skipped.</summary>
 	IReadOnlyList<PluginContextMenuItem> GetContextMenuItems(PluginContextMenuContext context);
+
+	/// <summary>Tool windows contributed by all enabled plugins, in load order. Failures are logged and skipped.</summary>
+	IReadOnlyList<IToolWindowProvider> GetToolWindowProviders();
 }
 
 /// <summary>

@@ -4,6 +4,8 @@
 using Files.App.Controls;
 using Files.App.Helpers;
 using Files.App.Helpers.ContextFlyouts;
+using Files.App.Services.Plugins;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -78,6 +80,7 @@ namespace Files.App.ViewModels.UserControls
 		private readonly SectionType[] SectionOrder =
 			[
 				SectionType.Home,
+				SectionType.Todo,
 				SectionType.Pinned,
 				SectionType.Library,
 				SectionType.Drives,
@@ -308,6 +311,7 @@ namespace Files.App.ViewModels.UserControls
 			sidebarItems = [];
 			UserSettingsService.OnSettingChangedEvent += UserSettingsService_OnSettingChangedEvent;
 			CreateItemHomeAsync();
+			_ = CreateSectionAsync(SectionType.Todo);
 
 			Manager_DataChanged(SectionType.Pinned, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
 			Manager_DataChanged(SectionType.Library, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
@@ -556,6 +560,12 @@ namespace Files.App.ViewModels.UserControls
 				case SectionType.Home:
 					section = BuildSection(Strings.Home.GetLocalizedResource(), sectionType, new ContextMenuOptions { IsLocationItem = true }, true);
 					section.Path = "Home";
+					section.IsHeader = true;
+					break;
+
+				case SectionType.Todo:
+					section = BuildSection(Strings.Todo.GetLocalizedResource(), sectionType, new ContextMenuOptions { IsLocationItem = true }, false);
+					section.Path = "Todo";
 					section.IsHeader = true;
 					break;
 
@@ -833,6 +843,20 @@ namespace Files.App.ViewModels.UserControls
 
 			var ctrlPressed = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
 			var middleClickPressed = pointerUpdateKind == PointerUpdateKind.MiddleButtonReleased;
+			if (string.Equals(navigationControlItem.Path, "Todo", StringComparison.OrdinalIgnoreCase))
+			{
+				// The Todo section is a launcher for the Todo plugin's tool window, not a navigable location.
+				try
+				{
+					Ioc.Default.GetRequiredService<IPluginService>().GetToolWindowProviders().FirstOrDefault()?.ShowWindow();
+				}
+				catch (Exception ex)
+				{
+					App.Logger?.LogWarning(ex, "Failed to open the Todo tool window.");
+				}
+				return;
+			}
+
 			if (string.Equals(navigationControlItem.Path, "Settings", StringComparison.OrdinalIgnoreCase))
 			{
 				if (ctrlPressed || middleClickPressed)

@@ -16,6 +16,7 @@ namespace Files.App.Helpers
 		public static string? For(SectionType section) => section switch
 		{
 			SectionType.Home => Resolve("Home"),
+			SectionType.Todo => Resolve("Todo"),
 			SectionType.Pinned => Resolve("Pinned"),
 			SectionType.Library => Resolve("Libraries"),
 			SectionType.Drives => Resolve("Drives"),

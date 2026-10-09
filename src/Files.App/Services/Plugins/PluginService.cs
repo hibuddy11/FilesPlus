@@ -100,6 +100,21 @@ internal sealed class PluginService : IPluginService, IFilesPluginHost
 		return items;
 	}
 
+	public IReadOnlyList<IToolWindowProvider> GetToolWindowProviders()
+	{
+		var providers = new List<IToolWindowProvider>();
+
+		foreach (var record in plugins)
+		{
+			if (!record.IsEnabled || record.LoadError is not null || record.Instance is not IToolWindowProvider provider)
+				continue;
+
+			providers.Add(provider);
+		}
+
+		return providers;
+	}
+
 	public string GetPluginDataDirectory(string pluginId)
 	{
 		var path = Path.Combine(AppDataCompat.LocalFolderPath, "Plugins", pluginId);
