@@ -149,11 +149,14 @@ public sealed class TodoStore
 
 	public List<TodoTask> Done { get; private set; } = [];
 
-	/// <summary>Resolves the data directory (default Documents\Todo), creates it and loads the files.</summary>
+	/// <summary>Default data location: a portable <c>data\todo</c> folder next to the app executable.</summary>
+	public static string DefaultDirectory => Path.Combine(AppContext.BaseDirectory, "data", "todo");
+
+	/// <summary>Resolves the data directory (default: app dir\data\todo), creates it and loads the files.</summary>
 	public async Task EnsureReadyAsync()
 	{
-		DataDirectory = LoadConfiguredDirectory() ?? Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Todo");
+		DataDirectory = LoadConfiguredDirectory() ?? DefaultDirectory;
+		MigrateLegacyDirectory();
 
 		Directory.CreateDirectory(DataDirectory);
 		Directory.CreateDirectory(AttachmentsDirectory);
@@ -161,6 +164,44 @@ public sealed class TodoStore
 			await File.WriteAllTextAsync(TodoFilePath, string.Empty, new UTF8Encoding(false));
 
 		await ReloadAsync();
+	}
+
+	// One-time copy from the old default (Documents\Todo) so existing data survives the location change.
+	private void MigrateLegacyDirectory()
+	{
+		try
+		{
+			var legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Todo");
+			if (!File.Exists(Path.Combine(legacy, "todo.txt")) || File.Exists(Path.Combine(DataDirectory, "todo.txt")))
+				return;
+
+			Directory.CreateDirectory(DataDirectory);
+			foreach (var name in (string[])["todo.txt", "done.txt"])
+			{
+				var source = Path.Combine(legacy, name);
+				if (File.Exists(source))
+					File.Copy(source, Path.Combine(DataDirectory, name));
+			}
+
+			var legacyAttachments = Path.Combine(legacy, "attachments");
+			if (Directory.Exists(legacyAttachments))
+				CopyDirectory(legacyAttachments, AttachmentsDirectory);
+
+			host.LogInformation(pluginId, $"Migrated Todo data from '{legacy}' to '{DataDirectory}'.");
+		}
+		catch (Exception ex)
+		{
+			host.LogError(pluginId, "Todo data migration from the legacy directory failed.", ex);
+		}
+	}
+
+	private static void CopyDirectory(string source, string target)
+	{
+		Directory.CreateDirectory(target);
+		foreach (var file in Directory.EnumerateFiles(source))
+			File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+		foreach (var directory in Directory.EnumerateDirectories(source))
+			CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory)));
 	}
 
 	public async Task SetDataDirectoryAsync(string path)
@@ -266,6 +307,32 @@ public sealed class TodoStore
 			task.RawLine = null;
 			Pending.Add(task);
 			await WriteBothAsync();
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
+	/// <summary>Archives nothing but removes all completed tasks and their now-unreferenced attachments.</summary>
+	public async Task ClearDoneAsync()
+	{
+		await gate.WaitAsync();
+		try
+		{
+			var removed = Done.ToList();
+			Done.Clear();
+			await WriteAsync(Done, DoneFilePath);
+
+			var referenced = Pending
+				.SelectMany(t => t.Attachments)
+				.Select(a => a.FileName)
+				.ToHashSet(StringComparer.OrdinalIgnoreCase);
+			foreach (var attachment in removed.SelectMany(t => t.Attachments))
+			{
+				if (!referenced.Contains(attachment.FileName) && attachment.FullPath is { } path && File.Exists(path))
+					File.Delete(path);
+			}
 		}
 		finally
 		{
