@@ -80,14 +80,14 @@ namespace Files.App.ViewModels.UserControls
 		private readonly SectionType[] SectionOrder =
 			[
 				SectionType.Home,
-				SectionType.Todo,
 				SectionType.Pinned,
 				SectionType.Library,
 				SectionType.Drives,
 				SectionType.CloudDrives,
 				SectionType.Network,
 				SectionType.WSL,
-				SectionType.FileTag
+				SectionType.FileTag,
+				SectionType.Todo
 			];
 
 		public bool IsSidebarCompactSize
