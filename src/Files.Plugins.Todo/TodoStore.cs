@@ -84,9 +84,9 @@ public sealed class TodoTask
 	private static readonly System.Text.RegularExpressions.Regex AttRegex =
 		new(@"(?:^|\s)att:(?<file>\S+)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-	// created-time:HH:mm / completed-time:HH:mm — custom todo.txt extension keys other apps simply preserve.
+	// created-time:HH:mm[:ss] / completed-time:HH:mm[:ss] — custom todo.txt extension keys other apps simply preserve.
 	private static readonly System.Text.RegularExpressions.Regex TimeKeyRegex =
-		new(@"(?:^|\s)(?<key>created-time|completed-time):(?<value>\d{1,2}:\d{2})(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
+		new(@"(?:^|\s)(?<key>created-time|completed-time):(?<value>\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
 	/// <summary>Parses one todo.txt line. Never returns null for non-empty input.</summary>
 	public static TodoTask Parse(string line)
@@ -120,7 +120,7 @@ public sealed class TodoTask
 		foreach (System.Text.RegularExpressions.Match match in TimeKeyRegex.Matches(rest))
 		{
 			var value = match.Groups["value"].Value;
-			if (!TimeOnly.TryParseExact(value, ["H:mm", "HH:mm"], out _))
+			if (!TimeOnly.TryParseExact(value, ["H:mm", "HH:mm", "H:mm:ss", "HH:mm:ss"], out _))
 				continue;
 
 			if (match.Groups["key"].Value == "created-time")
@@ -302,7 +302,7 @@ public sealed class TodoStore
 			var task = new TodoTask
 			{
 				Created = DateTime.Now.ToString("yyyy-MM-dd"),
-				CreatedTime = DateTime.Now.ToString("HH:mm"),
+				CreatedTime = DateTime.Now.ToString("HH:mm:ss"),
 				Body = body.Trim(),
 			};
 			if (attachments is not null)
@@ -327,7 +327,7 @@ public sealed class TodoStore
 			Pending.Remove(task);
 			task.IsCompleted = true;
 			task.CompletedDate = DateTime.Now.ToString("yyyy-MM-dd");
-			task.CompletedTime = DateTime.Now.ToString("HH:mm");
+			task.CompletedTime = DateTime.Now.ToString("HH:mm:ss");
 			task.RawLine = null;
 			Done.Add(task);
 			await WriteBothAsync();

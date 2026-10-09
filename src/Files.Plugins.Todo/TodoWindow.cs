@@ -31,10 +31,15 @@ internal sealed class TodoWindow : Window
 	private readonly string pluginId;
 
 	private readonly TextBox inputBox;
+	private readonly TextBox filterBox;
+	private readonly CheckBox filterByDate;
+	private readonly DatePicker filterFrom;
+	private readonly DatePicker filterTo;
 	private readonly Border countPill;
 	private readonly TextBlock countText = new();
 	private readonly StackPanel pendingPanel;
 	private readonly StackPanel emptyState;
+	private TextBlock emptyTitleText = null!;
 	private readonly Expander doneExpander;
 	private readonly TextBlock doneHeaderText;
 	private readonly StackPanel donePanel;
@@ -55,6 +60,21 @@ internal sealed class TodoWindow : Window
 		SystemBackdrop = new MicaBackdrop();
 
 		inputBox = BuildInputBox();
+		filterBox = new TextBox
+		{
+			PlaceholderText = "筛选：关键字…",
+			CornerRadius = new CornerRadius(8),
+			FontSize = 13,
+		};
+		filterByDate = new CheckBox
+		{
+			Content = "按日期",
+			FontSize = 12,
+			MinWidth = 0,
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+		filterFrom = new DatePicker();
+		filterTo = new DatePicker();
 		countPill = BuildCountPill();
 		pendingPanel = new StackPanel();
 		donePanel = new StackPanel();
@@ -145,6 +165,7 @@ internal sealed class TodoWindow : Window
 			{
 				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = GridLength.Auto },
+				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
 				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = GridLength.Auto },
@@ -161,6 +182,10 @@ internal sealed class TodoWindow : Window
 		Grid.SetRow(inputRow, 1);
 		root.Children.Add(inputRow);
 
+		var filterRow = BuildFilterRow();
+		Grid.SetRow(filterRow, 2);
+		root.Children.Add(filterRow);
+
 		var pendingScroll = new ScrollViewer
 		{
 			Content = pendingPanel,
@@ -171,14 +196,14 @@ internal sealed class TodoWindow : Window
 		var listGrid = new Grid();
 		listGrid.Children.Add(pendingScroll);
 		listGrid.Children.Add(emptyState);
-		Grid.SetRow(listGrid, 2);
+		Grid.SetRow(listGrid, 3);
 		root.Children.Add(listGrid);
 
-		Grid.SetRow(doneExpander, 3);
+		Grid.SetRow(doneExpander, 4);
 		root.Children.Add(doneExpander);
 
 		var footer = BuildFooter();
-		Grid.SetRow(footer, 4);
+		Grid.SetRow(footer, 5);
 		root.Children.Add(footer);
 
 		return root;
@@ -303,6 +328,102 @@ internal sealed class TodoWindow : Window
 		return box;
 	}
 
+	// --- Filtering ---
+
+	// Keyword + optional date range. Pending tasks filter by creation date, completed ones by
+	// completion date (falling back to creation date). All events just refresh the list; no I/O.
+	private StackPanel BuildFilterRow()
+	{
+		filterBox.TextChanged += (_, _) => ReloadUI();
+
+		var clearButton = new Button
+		{
+			Content = new FontIcon { Glyph = "\uE711", FontSize = 13 }, // Clear
+			CornerRadius = new CornerRadius(8),
+			Padding = new Thickness(9, 0, 9, 0),
+			MinWidth = 0,
+			VerticalAlignment = VerticalAlignment.Stretch,
+		};
+		Tip(clearButton, "清除筛选条件");
+		clearButton.Click += (_, _) =>
+		{
+			filterBox.Text = string.Empty;
+			filterByDate.IsChecked = false;
+		};
+
+		var line1 = new Grid
+		{
+			ColumnSpacing = 8,
+			ColumnDefinitions =
+			{
+				new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+				new ColumnDefinition { Width = GridLength.Auto },
+			},
+		};
+		line1.Children.Add(filterBox);
+		Grid.SetColumn(clearButton, 1);
+		line1.Children.Add(clearButton);
+
+		// Sensible default window (last month) is applied before wiring events, so no spurious refresh.
+		filterFrom.Date = DateTimeOffset.Now.AddDays(-30);
+		filterTo.Date = DateTimeOffset.Now;
+		filterFrom.IsEnabled = false;
+		filterTo.IsEnabled = false;
+		filterByDate.Checked += (_, _) =>
+		{
+			filterFrom.IsEnabled = true;
+			filterTo.IsEnabled = true;
+			ReloadUI();
+		};
+		filterByDate.Unchecked += (_, _) =>
+		{
+			filterFrom.IsEnabled = false;
+			filterTo.IsEnabled = false;
+			ReloadUI();
+		};
+		filterFrom.DateChanged += (_, _) => ReloadUI();
+		filterTo.DateChanged += (_, _) => ReloadUI();
+
+		var line2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+		line2.Children.Add(filterByDate);
+		line2.Children.Add(filterFrom);
+		line2.Children.Add(new TextBlock
+		{
+			Text = "至",
+			FontSize = 12,
+			Opacity = 0.6,
+			VerticalAlignment = VerticalAlignment.Center,
+		});
+		line2.Children.Add(filterTo);
+
+		var panel = new StackPanel { Spacing = 6 };
+		panel.Children.Add(line1);
+		panel.Children.Add(line2);
+		return panel;
+	}
+
+	private bool IsFilterActive()
+		=> filterBox.Text.Trim().Length > 0 || filterByDate.IsChecked == true;
+
+	private bool PassesFilter(TodoTask task)
+	{
+		var keyword = filterBox.Text.Trim();
+		if (keyword.Length > 0 && !task.Body.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+			return false;
+
+		if (filterByDate.IsChecked == true)
+		{
+			var dateText = task.IsCompleted ? task.CompletedDate ?? task.Created : task.Created;
+			if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd", out var date))
+				return false;
+
+			if (date < DateOnly.FromDateTime(filterFrom.Date.DateTime) || date > DateOnly.FromDateTime(filterTo.Date.DateTime))
+				return false;
+		}
+
+		return true;
+	}
+
 	private StackPanel BuildEmptyState()
 	{
 		var accent = (Color)Application.Current.Resources["SystemAccentColor"];
@@ -320,14 +441,15 @@ internal sealed class TodoWindow : Window
 			FontSize = 42,
 			Foreground = new SolidColorBrush(Color.FromArgb(0x88, accent.R, accent.G, accent.B)),
 		});
-		panel.Children.Add(new TextBlock
+		emptyTitleText = new TextBlock
 		{
 			Text = "没有待办事项",
 			FontSize = 15,
 			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
 			HorizontalAlignment = HorizontalAlignment.Center,
 			Margin = new Thickness(0, 10, 0, 0),
-		});
+		};
+		panel.Children.Add(emptyTitleText);
 		panel.Children.Add(new TextBlock
 		{
 			Text = "工作中想到什么，随手记到这里",
@@ -428,17 +550,26 @@ internal sealed class TodoWindow : Window
 
 	private void ReloadUI()
 	{
+		var active = IsFilterActive();
+		var shownPending = active ? [.. store.Pending.Where(PassesFilter)] : store.Pending;
+		var shownDone = active ? [.. store.Done.Where(PassesFilter)] : store.Done;
+
 		pendingPanel.Children.Clear();
 		donePanel.Children.Clear();
 
-		foreach (var task in store.Pending)
+		foreach (var task in shownPending)
 			pendingPanel.Children.Add(CreateTaskRow(task));
-		foreach (var task in store.Done)
+		foreach (var task in shownDone)
 			donePanel.Children.Add(CreateTaskRow(task));
 
-		countText.Text = store.Pending.Count > 0 ? $"{store.Pending.Count} 项待办" : "0";
-		emptyState.Visibility = store.Pending.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-		doneHeaderText.Text = $"已完成 ({store.Done.Count})";
+		countText.Text = active
+			? $"{shownPending.Count}/{store.Pending.Count}"
+			: store.Pending.Count > 0 ? $"{store.Pending.Count} 项待办" : "0";
+		emptyState.Visibility = shownPending.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+		emptyTitleText.Text = active ? "没有匹配的待办" : "没有待办事项";
+		doneHeaderText.Text = active
+			? $"已完成 ({shownDone.Count}/{store.Done.Count})"
+			: $"已完成 ({store.Done.Count})";
 		doneExpander.Visibility = store.Done.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
 		UpdateDirectoryText();
