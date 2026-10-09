@@ -33,6 +33,8 @@ internal sealed class TodoWindow : Window
 	private readonly TextBox inputBox;
 	private readonly TextBox filterBox;
 	private readonly CheckBox filterByDate;
+	private readonly RadioButton filterByCreated;
+	private readonly RadioButton filterByCompleted;
 	private readonly DatePicker filterFrom;
 	private readonly DatePicker filterTo;
 	private readonly Border countPill;
@@ -71,6 +73,23 @@ internal sealed class TodoWindow : Window
 			Content = "按日期",
 			FontSize = 12,
 			MinWidth = 0,
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+		filterByCreated = new RadioButton
+		{
+			Content = "创建",
+			FontSize = 12,
+			MinWidth = 0,
+			GroupName = "TodoDateMode",
+			IsChecked = true,
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+		filterByCompleted = new RadioButton
+		{
+			Content = "完成",
+			FontSize = 12,
+			MinWidth = 0,
+			GroupName = "TodoDateMode",
 			VerticalAlignment = VerticalAlignment.Center,
 		};
 		filterFrom = new DatePicker();
@@ -330,8 +349,8 @@ internal sealed class TodoWindow : Window
 
 	// --- Filtering ---
 
-	// Keyword + optional date range. Pending tasks filter by creation date, completed ones by
-	// completion date (falling back to creation date). All events just refresh the list; no I/O.
+	// Keyword + optional date range with a 创建/完成 mode switch: "创建" filters both lists by
+	// creation date, "完成" only the done list by completion date. Pure in-memory refresh.
 	private StackPanel BuildFilterRow()
 	{
 		filterBox.TextChanged += (_, _) => ReloadUI();
@@ -349,6 +368,7 @@ internal sealed class TodoWindow : Window
 		{
 			filterBox.Text = string.Empty;
 			filterByDate.IsChecked = false;
+			filterByCreated.IsChecked = true;
 		};
 
 		var line1 = new Grid
@@ -364,41 +384,51 @@ internal sealed class TodoWindow : Window
 		Grid.SetColumn(clearButton, 1);
 		line1.Children.Add(clearButton);
 
-		// Sensible default window (last month) is applied before wiring events, so no spurious refresh.
-		filterFrom.Date = DateTimeOffset.Now.AddDays(-30);
-		filterTo.Date = DateTimeOffset.Now;
-		filterFrom.IsEnabled = false;
-		filterTo.IsEnabled = false;
-		filterByDate.Checked += (_, _) =>
-		{
-			filterFrom.IsEnabled = true;
-			filterTo.IsEnabled = true;
-			ReloadUI();
-		};
-		filterByDate.Unchecked += (_, _) =>
-		{
-			filterFrom.IsEnabled = false;
-			filterTo.IsEnabled = false;
-			ReloadUI();
-		};
-		filterFrom.DateChanged += (_, _) => ReloadUI();
-		filterTo.DateChanged += (_, _) => ReloadUI();
+		Tip(filterByCreated, "待办与已完成都按创建日期筛选");
+		Tip(filterByCompleted, "仅已完成按完成日期筛选，待办不受影响");
+		var modeLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+		modeLine.Children.Add(filterByDate);
+		modeLine.Children.Add(filterByCreated);
+		modeLine.Children.Add(filterByCompleted);
 
-		var line2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-		line2.Children.Add(filterByDate);
-		line2.Children.Add(filterFrom);
-		line2.Children.Add(new TextBlock
+		var dateLine = new StackPanel
+		{
+			Orientation = Orientation.Horizontal,
+			Spacing = 8,
+			Visibility = Visibility.Collapsed,
+		};
+		dateLine.Children.Add(filterFrom);
+		dateLine.Children.Add(new TextBlock
 		{
 			Text = "至",
 			FontSize = 12,
 			Opacity = 0.6,
 			VerticalAlignment = VerticalAlignment.Center,
 		});
-		line2.Children.Add(filterTo);
+		dateLine.Children.Add(filterTo);
+
+		// Sensible default window (last month) is applied before wiring events, so no spurious refresh.
+		filterFrom.Date = DateTimeOffset.Now.AddDays(-30);
+		filterTo.Date = DateTimeOffset.Now;
+		filterByDate.Checked += (_, _) =>
+		{
+			dateLine.Visibility = Visibility.Visible;
+			ReloadUI();
+		};
+		filterByDate.Unchecked += (_, _) =>
+		{
+			dateLine.Visibility = Visibility.Collapsed;
+			ReloadUI();
+		};
+		filterFrom.DateChanged += (_, _) => ReloadUI();
+		filterTo.DateChanged += (_, _) => ReloadUI();
+		filterByCreated.Checked += (_, _) => ReloadUI();
+		filterByCompleted.Checked += (_, _) => ReloadUI();
 
 		var panel = new StackPanel { Spacing = 6 };
 		panel.Children.Add(line1);
-		panel.Children.Add(line2);
+		panel.Children.Add(modeLine);
+		panel.Children.Add(dateLine);
 		return panel;
 	}
 
@@ -413,16 +443,24 @@ internal sealed class TodoWindow : Window
 
 		if (filterByDate.IsChecked == true)
 		{
-			var dateText = task.IsCompleted ? task.CompletedDate ?? task.Created : task.Created;
-			if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd", out var date))
-				return false;
+			// "创建" constrains both lists by creation date; "完成" only completed tasks by
+			// completion date (pending tasks stay visible — they have no completion date yet).
+			if (filterByCompleted.IsChecked == true && !task.IsCompleted)
+				return true;
 
-			if (date < DateOnly.FromDateTime(filterFrom.Date.DateTime) || date > DateOnly.FromDateTime(filterTo.Date.DateTime))
-				return false;
+			var dateText = filterByCompleted.IsChecked == true
+				? task.CompletedDate ?? task.Created
+				: task.Created;
+			return DateInRange(dateText);
 		}
 
 		return true;
 	}
+
+	private bool DateInRange(string? dateText)
+		=> DateOnly.TryParseExact(dateText, "yyyy-MM-dd", out var date)
+			&& date >= DateOnly.FromDateTime(filterFrom.Date.DateTime)
+			&& date <= DateOnly.FromDateTime(filterTo.Date.DateTime);
 
 	private StackPanel BuildEmptyState()
 	{
