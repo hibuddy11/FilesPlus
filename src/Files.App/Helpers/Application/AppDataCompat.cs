@@ -11,13 +11,16 @@ namespace Files.App.Helpers
 {
 	/// <summary>
 	/// Provides access to application data that works in both packaged and unpackaged environments.
-	/// In unpackaged environments, data is redirected to folders under %LOCALAPPDATA%\Files\Unpackaged.
+	/// In unpackaged (portable) environments, data is kept next to the executable under data\appdata
+	/// so the app folder can be moved between machines with its settings and session intact; when the
+	/// executable directory is not writable, it falls back to %LOCALAPPDATA%\Files\Unpackaged.
 	/// </summary>
 	public static class AppDataCompat
 	{
 		private static readonly ApplicationData? _packagedData = TryGetApplicationData();
 
 		private static string? _localFolderPath;
+		private static string? _legacyFolderPath;
 
 		/// <summary>
 		/// Gets the application data of the current package, or <see langword="null"/> when the process has no package identity (unpackaged).
@@ -48,7 +51,74 @@ namespace Files.App.Helpers
 		/// </summary>
 		public static string LocalFolderPath
 			=> _localFolderPath ??= _packagedData?.LocalFolder.Path
-				?? CreateDirectory(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Files", "Unpackaged"));
+				?? CreateDirectory(GetUnpackagedFolderPath());
+
+		private static string GetUnpackagedFolderPath()
+		{
+			try
+			{
+				var exeDirectory = AppContext.BaseDirectory;
+				if (string.IsNullOrWhiteSpace(exeDirectory))
+					return GetLegacyFolderPath();
+
+				var portablePath = Path.Combine(exeDirectory, "data", "appdata");
+				Directory.CreateDirectory(portablePath);
+
+				// Probe write access; read-only locations (e.g. Program Files) fall back to legacy storage.
+				var probePath = Path.Combine(portablePath, ".portable-probe");
+				File.WriteAllText(probePath, string.Empty);
+				File.Delete(probePath);
+
+				MigrateLegacyData(portablePath);
+				return portablePath;
+			}
+			catch
+			{
+				return GetLegacyFolderPath();
+			}
+		}
+
+		private static string GetLegacyFolderPath()
+			=> _legacyFolderPath ??= CreateDirectory(Path.Combine(
+				Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Files", "Unpackaged"));
+
+		/// <summary>
+		/// One-time import from the pre-portable location so an updated install keeps its settings and session.
+		/// </summary>
+		private static void MigrateLegacyData(string portablePath)
+		{
+			try
+			{
+				if (Directory.EnumerateFileSystemEntries(portablePath).Any())
+					return;
+
+				var legacyPath = GetLegacyFolderPath();
+				if (!Directory.Exists(legacyPath))
+					return;
+
+				CopyTree(legacyPath, portablePath, skipDirectories: ["LocalCache", "Temporary"]);
+			}
+			catch
+			{
+				// Best-effort: the app still runs with fresh defaults if the import fails.
+			}
+		}
+
+		private static void CopyTree(string sourcePath, string targetPath, HashSet<string> skipDirectories)
+		{
+			Directory.CreateDirectory(targetPath);
+			foreach (var directory in Directory.GetDirectories(sourcePath))
+			{
+				if (!skipDirectories.Contains(Path.GetFileName(directory)))
+					CopyTree(directory, Path.Combine(targetPath, Path.GetFileName(directory)), skipDirectories);
+			}
+			foreach (var file in Directory.GetFiles(sourcePath))
+			{
+				var destination = Path.Combine(targetPath, Path.GetFileName(file));
+				if (!File.Exists(destination))
+					File.Copy(file, destination);
+			}
+		}
 
 		/// <summary>
 		/// Gets the local app data folder.

@@ -51,6 +51,7 @@
 ### 应用信息
 
 - 应用名：**FilesPlus**（主程序 `FilesPlus.exe`，免安装绿色版，解压后直接运行）
+- **便携数据**：所有应用数据（设置、会话标签、布局配置、插件数据、日志）保存在程序目录 `data\appdata\` 下，把整个应用目录拷贝到其他机器即可完整迁移打开的标签页与会话；旧版存放在 `%LOCALAPPDATA%\Files\Unpackaged` 的数据会在升级后首次启动时自动导入（程序目录不可写时仍回退到该位置）
 - 基于开源文件管理器 [Files](https://github.com/files-community/Files) 定制
 
 ### 自定义工具按钮
