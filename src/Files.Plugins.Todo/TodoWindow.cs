@@ -50,6 +50,8 @@ internal sealed class TodoWindow : Window
 
 	private TodoTask? selectedTask;
 	private bool wasActivated;
+	private TextBox? activeEditBox;
+	private Action? activeEditCommit;
 
 	public TodoWindow(TodoStore store, IFilesPluginHost host, string pluginId)
 	{
@@ -125,6 +127,22 @@ internal sealed class TodoWindow : Window
 		directoryText.PointerPressed += (_, _) => host.OpenPath(store.DataDirectory);
 
 		Content = BuildRoot();
+
+		// Clicking a non-focusable element (card background, empty space) does NOT move focus away
+		// from the edit box, so LostFocus alone never fires. Watch every pointer press on the window
+		// (even handled ones) and commit the active edit unless the click landed inside the edit box.
+		Content.AddHandler(
+			UIElement.PointerPressedEvent,
+			new PointerEventHandler((_, args) =>
+			{
+				if (activeEditBox is null || activeEditCommit is null)
+					return;
+				if (args.OriginalSource is DependencyObject source && IsWithin(source, activeEditBox))
+					return;
+				activeEditCommit();
+			}),
+			true);
+
 		Activated += (_, _) =>
 		{
 			if (wasActivated)
@@ -965,6 +983,9 @@ internal sealed class TodoWindow : Window
 		if (bodyBlock.Parent is not StackPanel line)
 			return;
 
+		// Only one inline edit at a time: commit the previous one before starting a new edit.
+		activeEditCommit?.Invoke();
+
 		var index = line.Children.IndexOf(bodyBlock);
 		var editBox = new TextBox { Text = task.Body, FontSize = 14 };
 		TextBox? pending = null;
@@ -974,6 +995,8 @@ internal sealed class TodoWindow : Window
 			if (pending is null)
 				return;
 			pending = null;
+			activeEditBox = null;
+			activeEditCommit = null;
 
 			try
 			{
@@ -998,15 +1021,34 @@ internal sealed class TodoWindow : Window
 			if (args.Key is VirtualKey.Enter)
 				Commit();
 			else if (args.Key is VirtualKey.Escape)
+			{
 				pending = null;
+				activeEditBox = null;
+				activeEditCommit = null;
+				line.Children.RemoveAt(index);
+				line.Children.Insert(index, bodyBlock);
+			}
 		};
 		editBox.LostFocus += (_, _) => Commit();
 
 		pending = editBox;
+		activeEditBox = editBox;
+		activeEditCommit = Commit;
 		line.Children.RemoveAt(index);
 		line.Children.Insert(index, editBox);
 		editBox.Focus(FocusState.Programmatic);
 		editBox.SelectAll();
+	}
+
+	private static bool IsWithin(DependencyObject node, DependencyObject ancestor)
+	{
+		while (node is not null)
+		{
+			if (ReferenceEquals(node, ancestor))
+				return true;
+			node = VisualTreeHelper.GetParent(node);
+		}
+		return false;
 	}
 
 	// --- Actions ---
