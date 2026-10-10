@@ -4,6 +4,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Files.Plugins.Todo;
 
@@ -39,6 +40,9 @@ public sealed class TodoTask
 
 	/// <summary>Completion time of day (HH:mm) stored as a custom todo.txt extension key, or null.</summary>
 	public string? CompletedTime { get; internal set; }
+
+	/// <summary>todo.txt contexts (@tag) found in the body, in order of appearance. The body keeps the raw text.</summary>
+	public List<string> Tags { get; } = [];
 
 	/// <summary>Task text with priority/dates/att: keys stripped.</summary>
 	public string Body { get; internal set; } = string.Empty;
@@ -88,6 +92,10 @@ public sealed class TodoTask
 	private static readonly System.Text.RegularExpressions.Regex TimeKeyRegex =
 		new(@"(?:^|\s)(?<key>created-time|completed-time):(?<value>\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+	// todo.txt contexts (@tag) — part of the open format, kept verbatim inside the body.
+	private static readonly System.Text.RegularExpressions.Regex TagRegex =
+		new(@"(?:^|\s)@(?<tag>[^\s@]+)(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
 	/// <summary>Parses one todo.txt line. Never returns null for non-empty input.</summary>
 	public static TodoTask Parse(string line)
 	{
@@ -129,6 +137,13 @@ public sealed class TodoTask
 				task.CompletedTime = value;
 		}
 		rest = TimeKeyRegex.Replace(rest, " ").Trim();
+
+		foreach (System.Text.RegularExpressions.Match match in TagRegex.Matches(rest))
+		{
+			var tag = match.Groups["tag"].Value;
+			if (!task.Tags.Contains(tag))
+				task.Tags.Add(tag);
+		}
 
 		foreach (System.Text.RegularExpressions.Match match in AttRegex.Matches(rest))
 			task.Attachments.Add(new TodoAttachment { FileName = match.Groups["file"].Value });
@@ -189,13 +204,66 @@ public sealed class TodoStore
 
 	public List<TodoTask> Done { get; private set; } = [];
 
+	/// <summary>Sentinel value for the built-in "tasks without any tag" group.</summary>
+	public const string UnassignedGroup = ":unassigned:";
+
+	/// <summary>User-defined group (= todo.txt @tag) chips shown in the group bar.</summary>
+	public List<string> Groups { get; private set; } = [];
+
+	/// <summary>Currently selected group chip: null = all, UnassignedGroup = tagless, otherwise a tag name.</summary>
+	public string? SelectedGroup { get; private set; }
+
+	/// <summary>All distinct tags across pending and done tasks (alphabetical).</summary>
+	public List<string> AllTags
+		=> [.. Pending.Concat(Done).SelectMany(t => t.Tags).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.OrdinalIgnoreCase)];
+
+	/// <summary>True when the given task belongs to the selected group.</summary>
+	public bool MatchesSelectedGroup(TodoTask task)
+	{
+		if (string.IsNullOrEmpty(SelectedGroup))
+			return true;
+		if (SelectedGroup == UnassignedGroup)
+			return task.Tags.Count == 0;
+		return task.Tags.Contains(SelectedGroup, StringComparer.OrdinalIgnoreCase);
+	}
+
+	public async Task AddGroupAsync(string name)
+	{
+		name = name.Trim().TrimStart('@');
+		if (name.Length == 0)
+			return;
+
+		if (!Groups.Contains(name, StringComparer.OrdinalIgnoreCase))
+			Groups.Add(name);
+		await SaveConfigAsync();
+	}
+
+	public async Task RemoveGroupAsync(string name)
+	{
+		Groups.RemoveAll(g => string.Equals(g, name, StringComparison.OrdinalIgnoreCase));
+		if (string.Equals(SelectedGroup, name, StringComparison.OrdinalIgnoreCase))
+			SelectedGroup = null;
+		await SaveConfigAsync();
+	}
+
+	public async Task SetSelectedGroupAsync(string? group)
+	{
+		SelectedGroup = string.IsNullOrWhiteSpace(group) ? null : group;
+		await SaveConfigAsync();
+	}
+
 	/// <summary>Default data location: a portable <c>data\todo</c> folder next to the app executable.</summary>
 	public static string DefaultDirectory => Path.Combine(AppContext.BaseDirectory, "data", "todo");
 
 	/// <summary>Resolves the data directory (default: app dir\data\todo), creates it and loads the files.</summary>
 	public async Task EnsureReadyAsync()
 	{
-		DataDirectory = LoadConfiguredDirectory() ?? DefaultDirectory;
+		_config = LoadConfig();
+		DataDirectory = (_config["DataDirectory"] as JsonValue)?.GetValue<string>() is { Length: > 0 } configured
+			? configured
+			: DefaultDirectory;
+		Groups = [.. (_config["Groups"] as JsonArray)?.OfType<JsonValue>().Select(v => v.GetValue<string>()) ?? []];
+		SelectedGroup = (_config["SelectedGroup"] as JsonValue)?.GetValue<string>();
 		MigrateLegacyDirectory();
 
 		Directory.CreateDirectory(DataDirectory);
@@ -250,29 +318,40 @@ public sealed class TodoStore
 		Directory.CreateDirectory(Path.Combine(path, "attachments"));
 
 		DataDirectory = path;
-		var json = JsonSerializer.Serialize(new { DataDirectory = path }, JsonOptions);
-		await File.WriteAllTextAsync(ConfigFilePath, json, new UTF8Encoding(false));
+		_config ??= [];
+		_config["DataDirectory"] = path;
+		await SaveConfigAsync();
 
 		await ReloadAsync();
 	}
 
-	private string? LoadConfiguredDirectory()
+	private JsonObject? _config;
+
+	private JsonObject LoadConfig()
 	{
 		try
 		{
-			if (!File.Exists(ConfigFilePath))
-				return null;
-
-			var doc = JsonDocument.Parse(File.ReadAllText(ConfigFilePath));
-			return doc.RootElement.TryGetProperty("DataDirectory", out var value) && value.GetString() is { Length: > 0 } path
-				? path
-				: null;
+			if (File.Exists(ConfigFilePath))
+				return JsonSerializer.Deserialize<JsonObject>(File.ReadAllText(ConfigFilePath)) ?? [];
 		}
 		catch (Exception ex)
 		{
-			host.LogError(pluginId, "Failed to read the Todo data directory config; using the default.", ex);
-			return null;
+			host.LogError(pluginId, "Failed to read the Todo config; using defaults.", ex);
 		}
+
+		return [];
+	}
+
+	private async Task SaveConfigAsync()
+	{
+		_config ??= [];
+		_config["Groups"] = new JsonArray([.. Groups.Select(g => (JsonNode?)g)]);
+		_config["SelectedGroup"] = SelectedGroup;
+		var json = JsonSerializer.Serialize(_config, JsonOptions);
+
+		var tempPath = ConfigFilePath + ".tmp";
+		await File.WriteAllTextAsync(tempPath, json, new UTF8Encoding(false));
+		File.Move(tempPath, ConfigFilePath, overwrite: true);
 	}
 
 	public async Task ReloadAsync()

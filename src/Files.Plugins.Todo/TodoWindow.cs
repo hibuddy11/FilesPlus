@@ -31,6 +31,10 @@ internal sealed class TodoWindow : Window
 	private readonly string pluginId;
 
 	private readonly TextBox inputBox;
+	private readonly StackPanel groupBarPanel = new() { Orientation = Orientation.Horizontal, Spacing = 6 };
+	private readonly Popup suggestionPopup = new() { IsLightDismissEnabled = true };
+	private readonly ListView suggestionList = new();
+	private int suggestionCaretStart;
 	private readonly TextBox filterBox;
 	private readonly CheckBox filterByDate;
 	private readonly RadioButton filterByCreated;
@@ -101,6 +105,7 @@ internal sealed class TodoWindow : Window
 		filterFrom = new DatePicker();
 		filterTo = new DatePicker();
 		countPill = BuildCountPill();
+		BuildTagSuggestionPopup();
 		pendingPanel = new StackPanel();
 		donePanel = new StackPanel();
 		emptyState = BuildEmptyState();
@@ -207,6 +212,7 @@ internal sealed class TodoWindow : Window
 				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = GridLength.Auto },
+				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
 				new RowDefinition { Height = GridLength.Auto },
 				new RowDefinition { Height = GridLength.Auto },
@@ -223,8 +229,12 @@ internal sealed class TodoWindow : Window
 		Grid.SetRow(inputRow, 1);
 		root.Children.Add(inputRow);
 
+		var groupBar = BuildGroupBar();
+		Grid.SetRow(groupBar, 2);
+		root.Children.Add(groupBar);
+
 		var filterRow = BuildFilterRow();
-		Grid.SetRow(filterRow, 2);
+		Grid.SetRow(filterRow, 3);
 		root.Children.Add(filterRow);
 
 		var pendingScroll = new ScrollViewer
@@ -237,14 +247,14 @@ internal sealed class TodoWindow : Window
 		var listGrid = new Grid();
 		listGrid.Children.Add(pendingScroll);
 		listGrid.Children.Add(emptyState);
-		Grid.SetRow(listGrid, 3);
+		Grid.SetRow(listGrid, 4);
 		root.Children.Add(listGrid);
 
-		Grid.SetRow(doneExpander, 4);
+		Grid.SetRow(doneExpander, 5);
 		root.Children.Add(doneExpander);
 
 		var footer = BuildFooter();
-		Grid.SetRow(footer, 5);
+		Grid.SetRow(footer, 6);
 		root.Children.Add(footer);
 
 		return root;
@@ -351,22 +361,242 @@ internal sealed class TodoWindow : Window
 	{
 		var box = new TextBox
 		{
-			PlaceholderText = "记一条待办，回车保存…",
+			PlaceholderText = "记一条待办，回车保存…（输入 @ 引用标签）",
 			CornerRadius = new CornerRadius(8),
 			FontSize = 14,
 		};
+		box.TextChanged += (_, _) => UpdateTagSuggestions();
 		box.KeyDown += (_, args) =>
 		{
+			// While tag suggestions are open, keys navigate/apply them before saving the task.
+			if (suggestionPopup.IsOpen)
+			{
+				switch (args.Key)
+				{
+					case VirtualKey.Enter or VirtualKey.Tab when suggestionList.Items.Count > 0:
+						args.Handled = true;
+						ApplySuggestion(suggestionList.SelectedIndex < 0 ? 0 : suggestionList.SelectedIndex);
+						return;
+					case VirtualKey.Up:
+						args.Handled = true;
+						if (suggestionList.Items.Count > 0)
+							suggestionList.SelectedIndex = Math.Max(0, suggestionList.SelectedIndex - 1);
+						return;
+					case VirtualKey.Down:
+						args.Handled = true;
+						if (suggestionList.Items.Count > 0)
+							suggestionList.SelectedIndex = Math.Min(suggestionList.Items.Count - 1, suggestionList.SelectedIndex + 1);
+						return;
+					case VirtualKey.Escape:
+						args.Handled = true;
+						suggestionPopup.IsOpen = false;
+						return;
+				}
+			}
+
 			if (args.Key is VirtualKey.Enter && !string.IsNullOrWhiteSpace(box.Text))
 				RunSafe(async () =>
 				{
 					var text = box.Text;
-					await store.AddAsync(text);
+					await store.AddAsync(WithGroupTag(text));
 					box.Text = string.Empty;
 					await ReloadAsync();
 				});
 		};
 		return box;
+	}
+
+	// --- Groups & tags ---
+
+	private ScrollViewer BuildGroupBar()
+	{
+		var scroll = new ScrollViewer
+		{
+			Content = groupBarPanel,
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+			HorizontalScrollMode = ScrollMode.Enabled,
+			VerticalScrollMode = ScrollMode.Disabled,
+		};
+		RebuildGroupBar();
+		return scroll;
+	}
+
+	private void RebuildGroupBar()
+	{
+		groupBarPanel.Children.Clear();
+		var selected = store.SelectedGroup;
+
+		groupBarPanel.Children.Add(BuildGroupChip("全部", groupValue: null, isSelected: string.IsNullOrEmpty(selected)));
+		foreach (var group in store.Groups)
+			groupBarPanel.Children.Add(BuildGroupChip('@' + group, groupValue: group, isSelected: string.Equals(selected, group, StringComparison.OrdinalIgnoreCase), removableGroup: group));
+		groupBarPanel.Children.Add(BuildGroupChip("未分组", groupValue: TodoStore.UnassignedGroup, isSelected: selected == TodoStore.UnassignedGroup));
+
+		var addButton = new Button
+		{
+			Content = new FontIcon { Glyph = "\uE710", FontSize = 11 }, // Add
+			FontSize = 12,
+			Padding = new Thickness(8, 2, 8, 2),
+			MinWidth = 0,
+			CornerRadius = new CornerRadius(10),
+		};
+		Tip(addButton, "新建分组（保存为 @标签）");
+		addButton.Click += (_, _) => RunSafe(AddGroupDialogAsync);
+		groupBarPanel.Children.Add(addButton);
+	}
+
+	private Button BuildGroupChip(string label, string? groupValue, bool isSelected, string? removableGroup = null)
+	{
+		var accent = (Color)Application.Current.Resources["SystemAccentColor"];
+		var chip = new Button
+		{
+			Content = label,
+			FontSize = 12,
+			Padding = new Thickness(10, 2, 10, 2),
+			MinWidth = 0,
+			CornerRadius = new CornerRadius(10),
+		};
+		if (isSelected)
+		{
+			chip.Background = new SolidColorBrush(Color.FromArgb(0x2E, accent.R, accent.G, accent.B));
+			chip.Foreground = new SolidColorBrush(accent);
+		}
+
+		chip.Click += (_, _) => RunSafe(() => SelectGroupAsync(groupValue));
+
+		if (removableGroup is not null)
+		{
+			var removeItem = new MenuFlyoutItem { Text = "从分组条移除" };
+			removeItem.Click += (_, _) => RunSafe(async () =>
+			{
+				await store.RemoveGroupAsync(removableGroup);
+				RebuildGroupBar();
+				await ReloadAsync();
+			});
+			chip.ContextFlyout = new MenuFlyout { Items = { removeItem } };
+			Tip(chip, $"{label}（右键可从分组条移除）");
+		}
+
+		return chip;
+	}
+
+	private async Task SelectGroupAsync(string? group)
+	{
+		await store.SetSelectedGroupAsync(group);
+		RebuildGroupBar();
+		await ReloadAsync();
+	}
+
+	private async Task AddGroupDialogAsync()
+	{
+		var input = new TextBox { PlaceholderText = "分组名（将作为 @标签 保存）" };
+		var dialog = new ContentDialog
+		{
+			Title = "新建分组",
+			Content = input,
+			PrimaryButtonText = "创建",
+			CloseButtonText = "取消",
+			DefaultButton = ContentDialogButton.Primary,
+			XamlRoot = Content.XamlRoot,
+		};
+		if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(input.Text))
+			return;
+
+		var name = input.Text.Trim().TrimStart('@');
+		await store.AddGroupAsync(name);
+		await store.SetSelectedGroupAsync(name);
+		RebuildGroupBar();
+		await ReloadAsync();
+		SetStatus($"已创建分组：@{name}");
+	}
+
+	// New tasks created while a group is selected automatically carry that group as a @tag.
+	private string WithGroupTag(string text)
+	{
+		var group = store.SelectedGroup;
+		if (string.IsNullOrEmpty(group) || group == TodoStore.UnassignedGroup)
+			return text;
+		return text.Contains('@' + group, StringComparison.Ordinal) ? text : text + " @" + group;
+	}
+
+	private void BuildTagSuggestionPopup()
+	{
+		suggestionList.MaxHeight = 180;
+		suggestionList.FontSize = 13;
+		suggestionList.BorderThickness = new Thickness(0);
+		suggestionList.Background = null;
+		suggestionList.IsItemClickEnabled = true;
+		suggestionList.ItemClick += (_, e) => ApplySuggestion(suggestionList.Items.IndexOf(e.ClickedItem));
+
+		suggestionPopup.Child = new Border
+		{
+			CornerRadius = new CornerRadius(8),
+			Background = Res("SolidBackgroundFillColorBaseBrush"),
+			BorderBrush = Res("ControlStrokeColorDefaultBrush"),
+			BorderThickness = new Thickness(1),
+			Padding = new Thickness(4),
+			Child = suggestionList,
+		};
+	}
+
+	// Shows candidates for the @token being typed before the caret.
+	private void UpdateTagSuggestions()
+	{
+		var text = inputBox.Text;
+		var caret = inputBox.SelectionStart;
+		int start = caret;
+		while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
+			start--;
+		var token = text[start..caret];
+
+		if (token.Length == 0 || token[0] != '@')
+		{
+			HideTagSuggestions();
+			return;
+		}
+
+		var prefix = token[1..];
+		var candidates = store.AllTags
+			.Where(t => prefix.Length == 0 || t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+			.Take(8)
+			.ToList();
+		if (candidates.Count == 0)
+		{
+			HideTagSuggestions();
+			return;
+		}
+
+		suggestionCaretStart = start;
+		suggestionList.Items.Clear();
+		foreach (var candidate in candidates)
+			suggestionList.Items.Add(candidate);
+		suggestionList.SelectedIndex = 0;
+
+		var origin = inputBox.TransformToVisual(null).TransformPoint(new global::Windows.Foundation.Point(0, 0));
+		suggestionPopup.HorizontalOffset = origin.X;
+		suggestionPopup.VerticalOffset = origin.Y + inputBox.ActualHeight + 4;
+		suggestionPopup.IsOpen = true;
+	}
+
+	private void HideTagSuggestions()
+		=> suggestionPopup.IsOpen = false;
+
+	private void ApplySuggestion(int index)
+	{
+		if (index < 0 || index >= suggestionList.Items.Count)
+			return;
+
+		var tag = suggestionList.Items[index]?.ToString() ?? string.Empty;
+		var text = inputBox.Text;
+		var caret = inputBox.SelectionStart;
+		int end = caret;
+		while (end < text.Length && !char.IsWhiteSpace(text[end]))
+			end++;
+
+		var replacement = '@' + tag + ' ';
+		inputBox.Text = text[..suggestionCaretStart] + replacement + text[end..];
+		inputBox.SelectionStart = suggestionCaretStart + replacement.Length;
+		HideTagSuggestions();
+		inputBox.Focus(FocusState.Programmatic);
 	}
 
 	// --- Filtering ---
@@ -455,10 +685,13 @@ internal sealed class TodoWindow : Window
 	}
 
 	private bool IsFilterActive()
-		=> filterBox.Text.Trim().Length > 0 || filterByDate.IsChecked == true;
+		=> filterBox.Text.Trim().Length > 0 || filterByDate.IsChecked == true || !string.IsNullOrEmpty(store.SelectedGroup);
 
 	private bool PassesFilter(TodoTask task)
 	{
+		if (!store.MatchesSelectedGroup(task))
+			return false;
+
 		var keyword = filterBox.Text.Trim();
 		if (keyword.Length > 0 && !task.Body.Contains(keyword, StringComparison.OrdinalIgnoreCase))
 			return false;
@@ -748,6 +981,25 @@ internal sealed class TodoWindow : Window
 				Opacity = 0.55,
 				Margin = new Thickness(30, 0, 0, 0),
 			});
+		}
+		if (task.Tags.Count > 0)
+		{
+			var tagsLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(30, 0, 0, 0) };
+			foreach (var tag in task.Tags)
+			{
+				var tagChip = new Button
+				{
+					Content = '@' + tag,
+					FontSize = 10,
+					Padding = new Thickness(6, 0, 6, 0),
+					MinWidth = 0,
+					CornerRadius = new CornerRadius(8),
+				};
+				Tip(tagChip, "筛选该分组");
+				tagChip.Click += (_, _) => RunSafe(() => SelectGroupAsync(tag));
+				tagsLine.Children.Add(tagChip);
+			}
+			content.Children.Add(tagsLine);
 		}
 		if (task.Attachments.Count > 0)
 			content.Children.Add(BuildAttachmentStrip(task));
@@ -1086,7 +1338,7 @@ internal sealed class TodoWindow : Window
 			}
 			else
 			{
-				await store.AddAsync(string.IsNullOrWhiteSpace(text) ? "截图" : text, [attachment]);
+				await store.AddAsync(WithGroupTag(string.IsNullOrWhiteSpace(text) ? "截图" : text), [attachment]);
 				SetStatus($"已新建任务并附加截图：{attachment.FileName}");
 			}
 
