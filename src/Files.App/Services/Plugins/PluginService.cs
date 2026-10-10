@@ -122,6 +122,10 @@ internal sealed class PluginService : IPluginService, IFilesPluginHost
 		return path;
 	}
 
+	// Reads the setting only (no UI calls), so it is safe from any plugin thread.
+	public string GetAppTheme()
+		=> Ioc.Default.GetRequiredService<IAppThemeModeService>().AppThemeMode.ToString();
+
 	public void LogInformation(string pluginId, string message)
 		=> App.Logger?.LogInformation("[Plugin {PluginId}] {Message}", pluginId, message);
 

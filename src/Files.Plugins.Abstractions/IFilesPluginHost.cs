@@ -23,4 +23,10 @@ public interface IFilesPluginHost
 
 	/// <summary>Opens a file or folder with the system default handler (shell open).</summary>
 	void OpenPath(string path);
+
+	/// <summary>
+	/// The app theme mode applied to host windows: "Default" (follow the system),
+	/// "Light" or "Dark". Plugins with their own windows use this to match the app.
+	/// </summary>
+	string GetAppTheme();
 }

@@ -70,6 +70,9 @@ internal sealed class TodoWindow : Window
 		if (pluginDir is not null && File.Exists(Path.Combine(pluginDir, "Todo.ico")))
 			AppWindow.SetIcon(Path.Combine(pluginDir, "Todo.ico"));
 		SystemBackdrop = new MicaBackdrop();
+		// Extend content into the title bar so its background follows the app theme; a
+		// system-drawn title bar would keep the OS light/dark mode regardless of the setting.
+		ExtendsContentIntoTitleBar = true;
 
 		inputBox = BuildInputBox();
 		filterBox = new TextBox
@@ -136,6 +139,7 @@ internal sealed class TodoWindow : Window
 		directoryText.PointerPressed += (_, _) => host.OpenPath(store.DataDirectory);
 
 		Content = BuildRoot();
+		ApplyHostTheme();
 
 		// Clicking a non-focusable element (card background, empty space) does NOT move focus away
 		// from the edit box, so LostFocus alone never fires. Watch every pointer press on the window
@@ -205,7 +209,8 @@ internal sealed class TodoWindow : Window
 
 		var root = new Grid
 		{
-			Margin = new Thickness(18, 14, 18, 14),
+			// Top margin clears the caption buttons overlaying the extended title bar area.
+			Margin = new Thickness(18, 44, 18, 14),
 			RowSpacing = 12,
 			RowDefinitions =
 			{
@@ -1088,6 +1093,38 @@ internal sealed class TodoWindow : Window
 
 		card.Child = grid;
 		return card;
+	}
+
+	// --- Host theme ---
+
+	// Without this the window follows the OS light/dark setting; match the app's appearance
+	// setting instead. Mica and the caption buttons adapt to the root element's RequestedTheme.
+	internal void ApplyHostTheme()
+	{
+		if (!Enum.TryParse(host.GetAppTheme(), out ElementTheme theme))
+			theme = ElementTheme.Default;
+
+		if (Content is FrameworkElement root)
+			root.RequestedTheme = theme;
+
+		if (AppWindow.TitleBar is not { } titleBar)
+			return;
+
+		// Content extends into the title bar: keep every button backdrop transparent (matches
+		// the main window) and only pin the glyph color for the explicit light/dark settings.
+		titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonHoverBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonPressedBackgroundColor = Microsoft.UI.Colors.Transparent;
+		switch (theme)
+		{
+			case ElementTheme.Light:
+				titleBar.ButtonForegroundColor = Microsoft.UI.Colors.Black;
+				break;
+			case ElementTheme.Dark:
+				titleBar.ButtonForegroundColor = Microsoft.UI.Colors.White;
+				break;
+		}
 	}
 
 	// --- Window size persistence ---

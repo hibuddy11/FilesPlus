@@ -63,6 +63,8 @@ public sealed class TodoPlugin : IFilesPlugin, IToolWindowProvider
 			}
 			else
 			{
+				// Re-apply so a theme change made after the window opened is picked up.
+				window.ApplyHostTheme();
 				window.Activate();
 				_ = window.ReloadAsync();
 			}

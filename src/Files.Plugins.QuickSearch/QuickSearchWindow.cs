@@ -53,6 +53,8 @@ internal sealed partial class QuickSearchWindow
 		{
 			// The default size is acceptable when resizing fails
 		}
+		// Extend content into the title bar so its background follows the app theme.
+		window.ExtendsContentIntoTitleBar = true;
 
 		searchBox = new TextBox()
 		{
@@ -73,7 +75,7 @@ internal sealed partial class QuickSearchWindow
 
 		statusText = new TextBlock() { Margin = new(12, 6, 12, 10), Opacity = 0.7 };
 
-		var root = new Grid();
+		var root = new Grid { Margin = new Thickness(0, 32, 0, 0) };
 		root.RowDefinitions.Add(new() { Height = GridLength.Auto });
 		root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
 		root.RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -83,6 +85,7 @@ internal sealed partial class QuickSearchWindow
 		Grid.SetRow(resultList, 1);
 		Grid.SetRow(statusText, 2);
 		window.Content = root;
+		ApplyHostTheme();
 
 		index = new SearchIndex(rootDirectory);
 		index.Published += Index_Published;
@@ -112,6 +115,36 @@ internal sealed partial class QuickSearchWindow
 		scanCts = new CancellationTokenSource();
 		var token = scanCts.Token;
 		_ = Task.Run(() => ScanIntoIndex(token));
+	}
+
+	// Without this the window follows the OS light/dark setting; match the app's appearance
+	// setting instead so plugin windows look consistent with the main window.
+	private void ApplyHostTheme()
+	{
+		if (!Enum.TryParse(host.GetAppTheme(), out ElementTheme theme))
+			theme = ElementTheme.Default;
+
+		if (window.Content is FrameworkElement root)
+			root.RequestedTheme = theme;
+
+		if (window.AppWindow?.TitleBar is not { } titleBar)
+			return;
+
+		// Content extends into the title bar: keep every button backdrop transparent and only
+		// pin the glyph color for the explicit light/dark settings.
+		titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonHoverBackgroundColor = Microsoft.UI.Colors.Transparent;
+		titleBar.ButtonPressedBackgroundColor = Microsoft.UI.Colors.Transparent;
+		switch (theme)
+		{
+			case ElementTheme.Light:
+				titleBar.ButtonForegroundColor = Microsoft.UI.Colors.Black;
+				break;
+			case ElementTheme.Dark:
+				titleBar.ButtonForegroundColor = Microsoft.UI.Colors.White;
+				break;
+		}
 	}
 
 	/// <summary>
