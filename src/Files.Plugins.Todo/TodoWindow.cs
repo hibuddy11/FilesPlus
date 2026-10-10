@@ -440,7 +440,7 @@ internal sealed class TodoWindow : Window
 			CornerRadius = new CornerRadius(10),
 		};
 		Tip(addButton, "新建分组（保存为 @标签）");
-		addButton.Click += (_, _) => RunSafe(AddGroupDialogAsync);
+		addButton.Click += (_, _) => ShowInlineGroupInput();
 		groupBarPanel.Children.Add(addButton);
 	}
 
@@ -486,27 +486,76 @@ internal sealed class TodoWindow : Window
 		await ReloadAsync();
 	}
 
-	private async Task AddGroupDialogAsync()
-	{
-		var input = new TextBox { PlaceholderText = "分组名（将作为 @标签 保存）" };
-		var dialog = new ContentDialog
-		{
-			Title = "新建分组",
-			Content = input,
-			PrimaryButtonText = "创建",
-			CloseButtonText = "取消",
-			DefaultButton = ContentDialogButton.Primary,
-			XamlRoot = Content.XamlRoot,
-		};
-		if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(input.Text))
-			return;
+	// Clicking + turns into an inline input chip at the end of the group bar; Enter commits, Esc cancels.
+	// (Replaces a ContentDialog, which is fragile inside a code-built plugin tool window.)
+	private bool _groupInputActive;
 
-		var name = input.Text.Trim().TrimStart('@');
-		await store.AddGroupAsync(name);
-		await store.SetSelectedGroupAsync(name);
-		RebuildGroupBar();
-		await ReloadAsync();
-		SetStatus($"已创建分组：@{name}");
+	private void ShowInlineGroupInput()
+	{
+		if (_groupInputActive)
+			return;
+		_groupInputActive = true;
+
+		var input = new TextBox
+		{
+			PlaceholderText = "新分组名",
+			FontSize = 12,
+			Width = 130,
+			MinWidth = 0,
+			CornerRadius = new CornerRadius(10),
+			Padding = new Thickness(8, 2, 8, 2),
+		};
+
+		var done = false;
+		async void Finish(bool commit)
+		{
+			if (done)
+				return;
+			done = true;
+			_groupInputActive = false;
+			input.LostFocus -= OnLostFocus;
+			groupBarPanel.Children.Remove(input);
+
+			var name = input.Text.Trim().TrimStart('@');
+			if (!commit || name.Length == 0)
+				return;
+
+			try
+			{
+				await store.AddGroupAsync(name);
+				await store.SetSelectedGroupAsync(name);
+				RebuildGroupBar();
+				await ReloadAsync();
+				SetStatus($"已创建分组：@{name}");
+			}
+			catch (Exception ex)
+			{
+				host.LogError(pluginId, "Failed to create a Todo group.", ex);
+				SetStatus($"操作失败：{ex.Message}");
+				RebuildGroupBar();
+			}
+		}
+
+		void OnLostFocus(object? sender, RoutedEventArgs e)
+			=> Finish(commit: true);
+
+		input.LostFocus += OnLostFocus;
+		input.KeyDown += (_, args) =>
+		{
+			if (args.Key is VirtualKey.Enter)
+			{
+				args.Handled = true;
+				Finish(commit: true);
+			}
+			else if (args.Key is VirtualKey.Escape)
+			{
+				args.Handled = true;
+				Finish(commit: false);
+			}
+		};
+
+		groupBarPanel.Children.Add(input);
+		input.Focus(FocusState.Programmatic);
 	}
 
 	// New tasks created while a group is selected automatically carry that group as a @tag.
@@ -837,6 +886,7 @@ internal sealed class TodoWindow : Window
 		}
 		catch (Exception ex)
 		{
+			host.LogError(pluginId, "Todo action failed.", ex);
 			SetStatus($"操作失败：{ex.Message}");
 		}
 	}
