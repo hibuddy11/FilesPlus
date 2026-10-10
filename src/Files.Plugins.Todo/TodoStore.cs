@@ -4,7 +4,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace Files.Plugins.Todo;
 
@@ -172,6 +172,21 @@ public sealed class TodoTask
 	}
 }
 
+/// <summary>Strongly-typed plugin config. Serialized via <see cref="TodoConfigContext"/> so no reflection-based JSON is needed.</summary>
+internal sealed record TodoConfigData
+{
+	/// <summary>Configured data directory, or null to use the default next to the app.</summary>
+	public string? DataDirectory { get; init; }
+
+	public List<string> Groups { get; init; } = [];
+
+	public string? SelectedGroup { get; init; }
+}
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(TodoConfigData))]
+internal partial class TodoConfigContext : JsonSerializerContext { }
+
 /// <summary>
 /// Loads and saves the task files. Pending tasks live in todo.txt, completed ones in done.txt
 /// (standard todo.txt convention). All writes are atomic (temp file + move) and serialized.
@@ -181,8 +196,6 @@ public sealed class TodoStore
 	private readonly IFilesPluginHost host;
 	private readonly string pluginId;
 	private readonly SemaphoreSlim gate = new(1, 1);
-
-	private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
 	public TodoStore(IFilesPluginHost host, string pluginId)
 	{
@@ -258,12 +271,12 @@ public sealed class TodoStore
 	/// <summary>Resolves the data directory (default: app dir\data\todo), creates it and loads the files.</summary>
 	public async Task EnsureReadyAsync()
 	{
-		_config = LoadConfig();
-		DataDirectory = (_config["DataDirectory"] as JsonValue)?.GetValue<string>() is { Length: > 0 } configured
+		config = LoadConfig();
+		DataDirectory = config.DataDirectory is { Length: > 0 } configured
 			? configured
 			: DefaultDirectory;
-		Groups = [.. (_config["Groups"] as JsonArray)?.OfType<JsonValue>().Select(v => v.GetValue<string>()) ?? []];
-		SelectedGroup = (_config["SelectedGroup"] as JsonValue)?.GetValue<string>();
+		Groups = [.. config.Groups];
+		SelectedGroup = config.SelectedGroup;
 		MigrateLegacyDirectory();
 
 		Directory.CreateDirectory(DataDirectory);
@@ -318,40 +331,51 @@ public sealed class TodoStore
 		Directory.CreateDirectory(Path.Combine(path, "attachments"));
 
 		DataDirectory = path;
-		_config ??= [];
-		_config["DataDirectory"] = path;
+		config = config with { DataDirectory = path };
 		await SaveConfigAsync();
 
 		await ReloadAsync();
 	}
 
-	private JsonObject? _config;
+	private TodoConfigData config = new();
 
-	private JsonObject LoadConfig()
+	private TodoConfigData LoadConfig()
 	{
 		try
 		{
 			if (File.Exists(ConfigFilePath))
-				return JsonSerializer.Deserialize<JsonObject>(File.ReadAllText(ConfigFilePath)) ?? [];
+				return JsonSerializer.Deserialize(File.ReadAllText(ConfigFilePath), TodoConfigContext.Default.TodoConfigData) ?? new TodoConfigData();
 		}
 		catch (Exception ex)
 		{
 			host.LogError(pluginId, "Failed to read the Todo config; using defaults.", ex);
 		}
 
-		return [];
+		return new TodoConfigData();
 	}
 
+	// The source generator keeps serialization AOT-safe (reflection-based JSON is disabled in this app).
+	// Persistence failures are logged but not rethrown: in-memory groups/selection keep working this session.
 	private async Task SaveConfigAsync()
 	{
-		_config ??= [];
-		_config["Groups"] = new JsonArray([.. Groups.Select(g => (JsonNode?)g)]);
-		_config["SelectedGroup"] = SelectedGroup;
-		var json = JsonSerializer.Serialize(_config, JsonOptions);
+		config = config with
+		{
+			Groups = [.. Groups],
+			SelectedGroup = SelectedGroup,
+		};
 
-		var tempPath = ConfigFilePath + ".tmp";
-		await File.WriteAllTextAsync(tempPath, json, new UTF8Encoding(false));
-		File.Move(tempPath, ConfigFilePath, overwrite: true);
+		try
+		{
+			var json = JsonSerializer.Serialize(config, TodoConfigContext.Default.TodoConfigData);
+
+			var tempPath = ConfigFilePath + ".tmp";
+			await File.WriteAllTextAsync(tempPath, json, new UTF8Encoding(false));
+			File.Move(tempPath, ConfigFilePath, overwrite: true);
+		}
+		catch (Exception ex)
+		{
+			host.LogError(pluginId, "Failed to save the Todo config; changes apply to this session only.", ex);
+		}
 	}
 
 	public async Task ReloadAsync()
