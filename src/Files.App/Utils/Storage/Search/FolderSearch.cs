@@ -536,7 +536,8 @@ namespace Files.App.Utils.Storage
 			if (hFile is { IsInvalid: false } findHandle)
 			{
 				// Always enter the delegate so the find handle is disposed; cancellation is checked before mutations.
-				// Single pass collects matching files AND subfolders; both are then processed concurrently.
+				// Name mode: the pattern find only returns matching entries (files and folders alike);
+				// content mode enumerates with "*" and additionally collects the subfolders to scan.
 				await Task.Run(() =>
 				{
 					using (findHandle)
@@ -561,11 +562,21 @@ namespace Files.App.Utils.Storage
 
 							if (isDirectory)
 							{
-								// Skip reparse points (junctions, symlinks): recursing into them can cycle
-								// forever and would duplicate matches already reachable via their target
-								var isReparsePoint = ((FileAttributes)findData.dwFileAttributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
-								if (!isReparsePoint && fileName != "." && fileName != "..")
-									subDirectories.Add(Path.Combine(folder, fileName));
+								if (contentMode)
+								{
+									// Skip reparse points (junctions, symlinks): recursing into them can cycle
+									// forever and would duplicate matches already reachable via their target
+									var isReparsePoint = ((FileAttributes)findData.dwFileAttributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
+									if (!isReparsePoint && fileName != "." && fileName != "..")
+										subDirectories.Add(Path.Combine(folder, fileName));
+								}
+								else if (shouldBeListed)
+								{
+									// Name mode: a directory returned by the pattern find matches the query,
+									// so it is itself a result; the subfolders to scan are collected by the
+									// separate directory-only pass below, which also sees non-matching names.
+									fileEntries.Add(findData);
+								}
 							}
 							else if (shouldBeListed)
 							{
@@ -587,6 +598,11 @@ namespace Files.App.Utils.Storage
 
 			if (token.IsCancellationRequested)
 				return subDirectories;
+
+			// Name mode: the pattern find never returns non-matching subfolders, so without this pass
+			// the scan would stop at the current directory. Content mode already collects them above.
+			if (!contentMode)
+				await AddSubDirectoriesAsync(folder, subDirectories, token);
 
 			if (contentMode)
 			{
@@ -704,6 +720,62 @@ namespace Files.App.Utils.Storage
 			}
 
 			return subDirectories;
+		}
+
+		/// <summary>
+		/// Collects the plain subdirectories of a folder with a directory-limited find. The search
+		/// pattern cannot be used here: it would hide non-matching subfolders and stop the recursion.
+		/// </summary>
+		private static async Task AddSubDirectoriesAsync(string folder, List<string> subDirectories, CancellationToken token)
+		{
+			(FindCloseSafeHandle? hSubDir, WIN32_FIND_DATAW subDirData) = await Task.Run(() =>
+			{
+				WIN32_FIND_DATAW subDirDataTsk = default;
+				FindCloseSafeHandle hSubDirTsk;
+				unsafe
+				{
+					hSubDirTsk = PInvoke.FindFirstFileEx($"{folder}\\*", FINDEX_INFO_LEVELS.FindExInfoBasic,
+						&subDirDataTsk, FINDEX_SEARCH_OPS.FindExSearchLimitToDirectories, FIND_FIRST_EX_FLAGS.FIND_FIRST_EX_LARGE_FETCH);
+				}
+				return (hSubDirTsk, subDirDataTsk);
+			}).WithTimeoutAsync(TimeSpan.FromSeconds(5));
+
+			if (token.IsCancellationRequested)
+			{
+				hSubDir?.Dispose();
+				return;
+			}
+
+			if (hSubDir is not { IsInvalid: false } subDirHandle)
+			{
+				hSubDir?.Dispose();
+				return;
+			}
+
+			// Always enter the delegate so the find handle is disposed; cancellation is checked before mutations.
+			await Task.Run(() =>
+			{
+				using (subDirHandle)
+				{
+					var hasNextDir = false;
+					do
+					{
+						if (token.IsCancellationRequested)
+							break;
+
+						string subDirName = subDirData.cFileName.ToString();
+						var isDirectory = ((FileAttributes)subDirData.dwFileAttributes & FileAttributes.Directory) == FileAttributes.Directory;
+						// LimitToDirectories is only a hint on some file systems, so still verify attributes.
+						// Skip reparse points (junctions, symlinks): recursing into them can cycle
+						// forever and would duplicate matches already reachable via their target.
+						var isReparsePoint = ((FileAttributes)subDirData.dwFileAttributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
+						if (isDirectory && !isReparsePoint && subDirName != "." && subDirName != "..")
+							subDirectories.Add(Path.Combine(folder, subDirName));
+
+						hasNextDir = PInvoke.FindNextFile(subDirHandle, out subDirData);
+					} while (hasNextDir);
+				}
+			});
 		}
 
 		/// <summary>
