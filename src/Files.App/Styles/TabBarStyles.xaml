@@ -1,5 +1,9 @@
 ﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+	<!--  WinUI's default tab separator (DividerStroke) is barely visible on the titlebar background;  -->
+	<!--  use a stronger tone so adjacent tabs read as clearly separated.                            -->
+	<SolidColorBrush x:Key="TabViewItemSeparator" Color="{ThemeResource TextFillColorSecondary}" />
+
 	<Style x:Key="TabBarCloseButtonStyle" TargetType="Button">
 		<Setter Property="HorizontalContentAlignment" Value="Center" />
 		<Setter Property="VerticalContentAlignment" Value="Center" />
@@ -128,7 +132,7 @@
 							x:Name="TabSeparator"
 							Grid.Column="1"
 							Width="1"
-							Margin="{ThemeResource TabViewItemSeparatorMargin}"
+							Margin="0,6,2,6"
 							HorizontalAlignment="Right"
 							BorderBrush="{ThemeResource TabViewItemSeparator}"
 							BorderThickness="1" />
@@ -199,6 +203,16 @@
 								IsTabStop="False"
 								IsTextScaleFactorEnabled="False"
 								Style="{ThemeResource TabBarCloseButtonStyle}" />
+
+							<!--  Accent underline: makes the selected tab unmistakable on the titlebar  -->
+							<Border
+								x:Name="SelectionIndicator"
+								Grid.ColumnSpan="3"
+								Height="2.5"
+								VerticalAlignment="Bottom"
+								Background="{ThemeResource AccentFillColorDefaultBrush}"
+								IsHitTestVisible="False"
+								Visibility="Collapsed" />
 						</Grid>
 
 						<!--  Drop-into target highlight  -->
@@ -255,6 +269,7 @@
 										<Setter Target="CloseButton.Foreground" Value="{ThemeResource TabViewItemHeaderSelectedCloseButtonForeground}" />
 										<Setter Target="LayoutRoot.Background" Value="Transparent" />
 										<Setter Target="ContentPresenter.FontWeight" Value="SemiBold" />
+									<Setter Target="SelectionIndicator.Visibility" Value="Visible" />
 									</VisualState.Setters>
 								</VisualState>
 
@@ -276,6 +291,7 @@
 
 										<Setter Target="LayoutRoot.Background" Value="Transparent" />
 										<Setter Target="ContentPresenter.FontWeight" Value="SemiBold" />
+									<Setter Target="SelectionIndicator.Visibility" Value="Visible" />
 									</VisualState.Setters>
 								</VisualState>
 
@@ -296,6 +312,7 @@
 										<Setter Target="CloseButton.Foreground" Value="{ThemeResource TabViewItemHeaderSelectedCloseButtonForeground}" />
 										<Setter Target="LayoutRoot.Background" Value="Transparent" />
 										<Setter Target="ContentPresenter.FontWeight" Value="SemiBold" />
+									<Setter Target="SelectionIndicator.Visibility" Value="Visible" />
 									</VisualState.Setters>
 								</VisualState>
 							</VisualStateGroup>

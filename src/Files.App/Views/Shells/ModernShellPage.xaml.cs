@@ -61,9 +61,6 @@ namespace Files.App.Views.Shells
 			}
 		}
 
-		public bool ShowPaneTabStrip
-			=> (PaneHolder?.IsMultiPaneActive ?? false) || PaneTabs.Count > 1;
-
 		public ModernShellPage() : base(new CurrentInstanceViewModel())
 		{
 			InitializeComponent();
@@ -332,18 +329,11 @@ namespace Files.App.Views.Shells
 
 		// Pane tabs interaction (QDir-style)
 
-		protected override void OnPaneHolderStateChanged(PropertyChangedEventArgs e)
-		{
-			if (e.PropertyName is nameof(IShellPanesPage.IsMultiPaneActive) or nameof(IShellPanesPage.ActivePane))
-				NotifyPropertyChanged(nameof(ShowPaneTabStrip));
-		}
-
 		private PaneTabItem AddPaneTabCore(string path)
 		{
 			var tab = new PaneTabItem(string.IsNullOrEmpty(path) ? "Home" : path);
 			PaneTabs.Add(tab);
 			ActivePaneTab = tab;
-			NotifyPropertyChanged(nameof(ShowPaneTabStrip));
 			NotifyPaneTabsChanged();
 			return tab;
 		}
@@ -393,7 +383,6 @@ namespace Files.App.Views.Shells
 				NavParams = new NavigationParams { NavPath = next.Path };
 			}
 
-			NotifyPropertyChanged(nameof(ShowPaneTabStrip));
 			NotifyPaneTabsChanged();
 		}
 
