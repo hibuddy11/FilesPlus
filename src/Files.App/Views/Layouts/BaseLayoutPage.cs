@@ -454,6 +454,18 @@ namespace Files.App.Views.Layouts
 			return (item.DataContext as ListedItem) ?? (item.Content as ListedItem) ?? (ItemsControl.ItemFromContainer(item) as ListedItem);
 		}
 
+		// ContextRequested reports the innermost hit-tested element, which is usually an inner part
+		// of the item template (icon, name text) rather than the container itself; walk up the
+		// visual tree to the item container so a right-click anywhere on the item resolves to it.
+		private DependencyObject? FindItemContainer(object element)
+		{
+			var node = element as DependencyObject;
+			while (node is not null && !CanGetItemFromElement(node))
+				node = VisualTreeHelper.GetParent(node);
+
+			return node;
+		}
+
 		protected virtual void BaseFolderSettings_LayoutModeChangeRequested(object? sender, LayoutModeEventArgs e)
 		{
 			if (ParentShellPageInstance is { SlimContentPage: not null } parentShellPage)
@@ -749,7 +761,8 @@ namespace Files.App.Views.Layouts
 				return;
 
 			// Resolve the clicked item from the original source; null means the empty background.
-			var clickedItem = GetItemFromElement(e.OriginalSource);
+			var clickedContainer = FindItemContainer(e.OriginalSource);
+			var clickedItem = clickedContainer is null ? null : GetItemFromElement(clickedContainer);
 
 			var parentShellPage = ParentShellPageInstance;
 			var workingDirectory = parentShellPage?.GetRequiredShellViewModel().WorkingDirectory;
@@ -760,7 +773,7 @@ namespace Files.App.Views.Layouts
 			if (clickedItem is not null)
 			{
 				// Preserve select-under-cursor semantics for unselected targets
-				if (e.OriginalSource is SelectorItem { IsSelected: false })
+				if (clickedContainer is SelectorItem { IsSelected: false })
 					ItemManipulationModel.SetSelectedItem(clickedItem);
 
 				paths = SelectedItems?
@@ -796,7 +809,10 @@ namespace Files.App.Views.Layouts
 		/// </summary>
 		protected virtual bool IsRightTapWithinOwnedFlyoutRegion(ContextRequestedEventArgs e) => false;
 
-		private async Task<IShellPage> EnsurePageIsCurrentAsync(MenuFlyout? flyout = null)
+		private bool IsNativeMenuActive => Volatile.Read(ref nativeMenuShowGate) != 0;
+
+		/// <returns>The parent shell page, or null when the native Windows menu took over the gesture.</returns>
+		private async Task<IShellPage?> EnsurePageIsCurrentAsync(MenuFlyout? flyout = null)
 		{
 			var parentShellPage = ParentShellPageInstance
 				?? throw new InvalidOperationException("The layout does not have a parent shell page.");
@@ -808,11 +824,24 @@ namespace Files.App.Views.Layouts
 				flyout?.Hide();
 				await Task.WhenAny(parentShellPage.WhenIsCurrent(), Task.Delay(500));
 				await Task.Delay(10);
+				if (IsNativeMenuActive)
+					return null;
 				if (flyout?.Target is not null)
 					flyout.ShowAt(flyout.Target);
 			}
 
 			return parentShellPage;
+		}
+
+		/// <summary>
+		/// The framework opens the Files flyout while ContextRequested is still bubbling, before the
+		/// page-level native-menu takeover runs later in the same dispatch. Yield past that dispatch so a
+		/// superseded flyout never queries shell extensions concurrently with the native menu.
+		/// </summary>
+		private async Task<bool> CanLoadShellMenuItemsAsync()
+		{
+			await Task.Yield();
+			return !IsNativeMenuActive;
 		}
 
 		private CancellationToken RenewShellMenuToken()
@@ -838,6 +867,8 @@ namespace Files.App.Views.Layouts
 			try
 			{
 				var parentShellPage = await EnsurePageIsCurrentAsync(sender as MenuFlyout);
+				if (parentShellPage is null)
+					return;
 				var shellViewModel = parentShellPage.GetRequiredShellViewModel();
 				var commandsViewModel = CommandsViewModel
 					?? throw new InvalidOperationException("The layout commands are not initialized.");
@@ -889,6 +920,12 @@ namespace Files.App.Views.Layouts
 
 					// Place the primary row BEFORE the menu renders so it does not jump on an upward open.
 					host.ResolvePlacement();
+
+					if (!await CanLoadShellMenuItemsAsync())
+					{
+						(sender as MenuFlyout)?.Hide();
+						return;
+					}
 
 					var shellMenuItems = await ContentPageContextFlyoutFactory.GetItemContextShellCommandsAsync(
 						shellViewModel.WorkingDirectory, selectedItems, shiftPressed, false, token);
@@ -1115,6 +1152,8 @@ namespace Files.App.Views.Layouts
 			try
 			{
 				var parentShellPage = await EnsurePageIsCurrentAsync(sender as MenuFlyout);
+				if (parentShellPage is null)
+					return;
 				var shellViewModel = parentShellPage.GetRequiredShellViewModel();
 				var commandsViewModel = CommandsViewModel
 					?? throw new InvalidOperationException("The layout commands are not initialized.");
@@ -1138,6 +1177,12 @@ namespace Files.App.Views.Layouts
 					var (moreOptions, moreSeparator) = host.AddShowMoreOptionsIfEnabled(items);
 
 					host.ResolvePlacement();
+
+					if (!await CanLoadShellMenuItemsAsync())
+					{
+						(sender as MenuFlyout)?.Hide();
+						return;
+					}
 
 					var shellMenuItems = await ContentPageContextFlyoutFactory.GetItemContextShellCommandsAsync(workingDir: shellViewModel.WorkingDirectory, selectedItems: [], shiftPressed: shiftPressed, showOpenMenu: false, token);
 					if (token.IsCancellationRequested)

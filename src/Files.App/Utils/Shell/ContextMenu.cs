@@ -25,6 +25,17 @@ namespace Files.App.Utils.Shell
 		private const uint CmicMaskUnicode = 0x00004000;
 		private static readonly ImageConverter IconConverter = new();
 
+		/// <summary>
+		/// Serializes calls that load and initialize third-party shell extensions (QueryContextMenu,
+		/// submenu population). Explorer never builds menus concurrently, and several handlers
+		/// (e.g. Sogou biz_shellext64, TortoiseSVN) are not thread-safe during class-object creation:
+		/// two worker threads entering them at once double-frees their global state and fail-fasts
+		/// the process with 0xC0000374. Monitor is used deliberately: a blocked STA worker keeps
+		/// pumping COM messages while it waits, so cross-apartment calls cannot deadlock.
+		/// Never take this lock on the UI thread.
+		/// </summary>
+		internal static readonly object ShellExtensionLock = new();
+
 		private IContextMenu? contextMenu;
 		private HMENU menu;
 		private readonly ContextMenuWorkerPool.Worker worker;
@@ -246,7 +257,8 @@ namespace Files.App.Utils.Shell
 				contextMenu = BindContextMenu(itemArray);
 
 				menu = PInvoke.CreatePopupMenu();
-				contextMenu.QueryContextMenu(menu, 0, 1, 0x7FFF, PInvoke.CMF_NORMAL).ThrowOnFailure();
+				lock (ShellExtensionLock)
+					contextMenu.QueryContextMenu(menu, 0, 1, 0x7FFF, PInvoke.CMF_NORMAL).ThrowOnFailure();
 
 				// The menu is owned by a hidden window on this worker STA thread so that
 				// WM_INITMENUPOPUP / WM_MEASUREITEM / WM_DRAWITEM (needed by handlers that populate
@@ -388,10 +400,13 @@ namespace Files.App.Utils.Shell
 			try
 			{
 				LRESULT result = default;
-				if (handler is IContextMenu3 contextMenu3)
-					return contextMenu3.HandleMenuMsg2(message, wParam, lParam, &result).Succeeded;
-				if (handler is IContextMenu2 contextMenu2)
-					return contextMenu2.HandleMenuMsg(message, wParam, lParam).Succeeded;
+				lock (ShellExtensionLock)
+				{
+					if (handler is IContextMenu3 contextMenu3)
+						return contextMenu3.HandleMenuMsg2(message, wParam, lParam, &result).Succeeded;
+					if (handler is IContextMenu2 contextMenu2)
+						return contextMenu2.HandleMenuMsg(message, wParam, lParam).Succeeded;
+				}
 			}
 			catch (Exception ex) when (ex is COMException or InvalidCastException or NotImplementedException)
 			{
@@ -418,7 +433,8 @@ namespace Files.App.Utils.Shell
 				IContextMenu shellContextMenu = BindContextMenu(itemArray);
 
 				menu = PInvoke.CreatePopupMenu();
-				shellContextMenu.QueryContextMenu(menu, 0, 1, 0x7FFF, flags).ThrowOnFailure();
+				lock (ShellExtensionLock)
+					shellContextMenu.QueryContextMenu(menu, 0, 1, 0x7FFF, flags).ThrowOnFailure();
 				var contextMenu = new ContextMenu(shellContextMenu, menu, shellItems.Select(item => item.ParsingName).WhereNotNull(), worker, itemFilter);
 				menu = default;
 				contextMenu.EnumMenuItems(contextMenu.menu, contextMenu.Items!);
@@ -553,7 +569,8 @@ namespace Files.App.Utils.Shell
 			{
 				try
 				{
-					loadSubMenu();
+					lock (ShellExtensionLock)
+						loadSubMenu();
 					return true;
 				}
 				catch

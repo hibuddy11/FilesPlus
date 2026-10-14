@@ -119,7 +119,8 @@ namespace Files.App.Utils.Shell
 					return null;
 
 				hMenu = PInvoke.CreatePopupMenu();
-				hr = openWithContextMenu.QueryContextMenu(hMenu, 0, 1, 256, 0);
+				lock (ContextMenu.ShellExtensionLock)
+					hr = openWithContextMenu.QueryContextMenu(hMenu, 0, 1, 256, 0);
 				if (hr.ThrowIfFailedOnDebug().Failed)
 					return null;
 
@@ -127,7 +128,8 @@ namespace Files.App.Utils.Shell
 				if (hSubMenu.IsNull)
 					return null;
 
-				hr = openWithContextMenu2.HandleMenuMsg(PInvoke.WM_INITMENUPOPUP, (WPARAM)(nuint)hSubMenu.Value, 0);
+				lock (ContextMenu.ShellExtensionLock)
+					hr = openWithContextMenu2.HandleMenuMsg(PInvoke.WM_INITMENUPOPUP, (WPARAM)(nuint)hSubMenu.Value, 0);
 				if (hr.ThrowIfFailedOnDebug().Failed)
 					return null;
 
