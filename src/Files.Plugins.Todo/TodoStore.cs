@@ -26,6 +26,9 @@ public sealed class TodoTask
 {
 	public bool IsCompleted { get; internal set; }
 
+	/// <summary>Starred tasks are collected in the star view; stored as the custom extension key star:1.</summary>
+	public bool IsStarred { get; internal set; }
+
 	/// <summary>Completion date (yyyy-MM-dd), set when the task is completed.</summary>
 	public string? CompletedDate { get; internal set; }
 
@@ -75,6 +78,8 @@ public sealed class TodoTask
 		if (!string.IsNullOrEmpty(Created))
 			sb.Append(Created).Append(' ');
 		sb.Append(Body);
+		if (IsStarred)
+			sb.Append(" star:1");
 		if (CreatedTime is not null)
 			sb.Append(" created-time:").Append(CreatedTime);
 		if (IsCompleted && CompletedTime is not null)
@@ -91,6 +96,10 @@ public sealed class TodoTask
 	// created-time:HH:mm[:ss] / completed-time:HH:mm[:ss] — custom todo.txt extension keys other apps simply preserve.
 	private static readonly System.Text.RegularExpressions.Regex TimeKeyRegex =
 		new(@"(?:^|\s)(?<key>created-time|completed-time):(?<value>\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+	// star:1 — custom extension key marking a starred task; other todo.txt apps simply preserve it.
+	private static readonly System.Text.RegularExpressions.Regex StarRegex =
+		new(@"(?:^|\s)star:1(?=\s|$)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
 	// todo.txt contexts (@tag) — part of the open format, kept verbatim inside the body.
 	private static readonly System.Text.RegularExpressions.Regex TagRegex =
@@ -138,6 +147,12 @@ public sealed class TodoTask
 		}
 		rest = TimeKeyRegex.Replace(rest, " ").Trim();
 
+		if (StarRegex.IsMatch(rest))
+		{
+			task.IsStarred = true;
+			rest = StarRegex.Replace(rest, " ").Trim();
+		}
+
 		foreach (System.Text.RegularExpressions.Match match in TagRegex.Matches(rest))
 		{
 			var tag = match.Groups["tag"].Value;
@@ -154,6 +169,7 @@ public sealed class TodoTask
 		// Plain unmodified line (nothing we would reformat): keep verbatim for round-tripping
 		if (!task.IsCompleted
 			&& task.Priority is null
+			&& !task.IsStarred
 			&& task.Created is null
 			&& task.CreatedTime is null
 			&& task.CompletedTime is null
@@ -181,6 +197,18 @@ internal sealed record TodoConfigData
 	public List<string> Groups { get; init; } = [];
 
 	public string? SelectedGroup { get; init; }
+
+	public List<TodoGroupStyle> GroupStyles { get; init; } = [];
+}
+
+/// <summary>Per-group color and icon (like MarkTodo's list editor). Color is RRGGBB hex, Icon a Segoe Fluent glyph.</summary>
+internal sealed class TodoGroupStyle
+{
+	public string Name { get; set; } = string.Empty;
+
+	public string? Color { get; set; }
+
+	public string? Icon { get; set; }
 }
 
 [JsonSourceGenerationOptions(WriteIndented = true)]
@@ -217,27 +245,73 @@ public sealed class TodoStore
 
 	public List<TodoTask> Done { get; private set; } = [];
 
-	/// <summary>Sentinel value for the built-in "tasks without any tag" group.</summary>
+	/// <summary>Sentinel value for the built-in "tasks without any group" (inbox) group.</summary>
 	public const string UnassignedGroup = ":unassigned:";
+
+	/// <summary>Sentinel value for the built-in star view.</summary>
+	public const string StarGroup = ":starred:";
 
 	/// <summary>User-defined group (= todo.txt @tag) chips shown in the group bar.</summary>
 	public List<string> Groups { get; private set; } = [];
 
-	/// <summary>Currently selected group chip: null = all, UnassignedGroup = tagless, otherwise a tag name.</summary>
+	/// <summary>Color/icon customizations per group.</summary>
+	internal List<TodoGroupStyle> GroupStyles { get; private set; } = [];
+
+	/// <summary>Currently selected group chip: null = all, StarGroup = starred, UnassignedGroup = inbox, otherwise a tag name.</summary>
 	public string? SelectedGroup { get; private set; }
 
 	/// <summary>All distinct tags across pending and done tasks (alphabetical).</summary>
 	public List<string> AllTags
 		=> [.. Pending.Concat(Done).SelectMany(t => t.Tags).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.OrdinalIgnoreCase)];
 
+	/// <summary>The group chip a task belongs to (its first tag that is a defined group), or null for the inbox.</summary>
+	public string? GroupOf(TodoTask task)
+		=> Groups.FirstOrDefault(g => task.Tags.Contains(g, StringComparer.OrdinalIgnoreCase));
+
 	/// <summary>True when the given task belongs to the selected group.</summary>
 	public bool MatchesSelectedGroup(TodoTask task)
 	{
 		if (string.IsNullOrEmpty(SelectedGroup))
 			return true;
+		if (SelectedGroup == StarGroup)
+			return task.IsStarred;
 		if (SelectedGroup == UnassignedGroup)
-			return task.Tags.Count == 0;
+			return GroupOf(task) is null;
 		return task.Tags.Contains(SelectedGroup, StringComparer.OrdinalIgnoreCase);
+	}
+
+	internal TodoGroupStyle? GetGroupStyle(string name)
+		=> GroupStyles.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+
+	public async Task SetGroupStyleAsync(string name, string? color, string? icon)
+	{
+		var style = GetGroupStyle(name);
+		if (style is null)
+		{
+			style = new TodoGroupStyle { Name = name };
+			GroupStyles.Add(style);
+		}
+
+		if (color is not null)
+			style.Color = color;
+		if (icon is not null)
+			style.Icon = icon;
+		await SaveConfigAsync();
+	}
+
+	public async Task SetStarredAsync(TodoTask task, bool starred)
+	{
+		await gate.WaitAsync();
+		try
+		{
+			task.IsStarred = starred;
+			task.RawLine = null;
+			await WriteAsync(task.IsCompleted ? Done : Pending, task.IsCompleted ? DoneFilePath : TodoFilePath);
+		}
+		finally
+		{
+			gate.Release();
+		}
 	}
 
 	public async Task AddGroupAsync(string name)
@@ -254,6 +328,7 @@ public sealed class TodoStore
 	public async Task RemoveGroupAsync(string name)
 	{
 		Groups.RemoveAll(g => string.Equals(g, name, StringComparison.OrdinalIgnoreCase));
+		GroupStyles.RemoveAll(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
 		if (string.Equals(SelectedGroup, name, StringComparison.OrdinalIgnoreCase))
 			SelectedGroup = null;
 		await SaveConfigAsync();
@@ -275,7 +350,8 @@ public sealed class TodoStore
 		DataDirectory = config.DataDirectory is { Length: > 0 } configured
 			? configured
 			: DefaultDirectory;
-		Groups = [.. config.Groups];
+		Groups = [.. config.Groups ?? []];
+		GroupStyles = [.. config.GroupStyles ?? []];
 		SelectedGroup = config.SelectedGroup;
 		MigrateLegacyDirectory();
 
@@ -361,6 +437,7 @@ public sealed class TodoStore
 		config = config with
 		{
 			Groups = [.. Groups],
+			GroupStyles = [.. GroupStyles],
 			SelectedGroup = SelectedGroup,
 		};
 
@@ -397,7 +474,7 @@ public sealed class TodoStore
 		}
 	}
 
-	public async Task<TodoTask> AddAsync(string body, IEnumerable<TodoAttachment>? attachments = null)
+	public async Task<TodoTask> AddAsync(string body, IEnumerable<TodoAttachment>? attachments = null, bool starred = false)
 	{
 		await gate.WaitAsync();
 		try
@@ -407,6 +484,7 @@ public sealed class TodoStore
 				Created = DateTime.Now.ToString("yyyy-MM-dd"),
 				CreatedTime = DateTime.Now.ToString("HH:mm:ss"),
 				Body = body.Trim(),
+				IsStarred = starred,
 			};
 			if (attachments is not null)
 				task.Attachments.AddRange(attachments);

@@ -54,6 +54,8 @@ internal sealed class TodoWindow : Window
 
 	private TodoTask? selectedTask;
 	private bool wasActivated;
+	private Windows.Graphics.SizeInt32 lastWindowSize;
+	private int cardColumns = 1;
 	private TextBox? activeEditBox;
 	private Action? activeEditCommit;
 
@@ -64,7 +66,17 @@ internal sealed class TodoWindow : Window
 		this.pluginId = pluginId;
 
 		Title = "待办";
-		AppWindow.Resize(LoadWindowSize(520, 780));
+		lastWindowSize = LoadWindowSize(520, 780);
+		AppWindow.Resize(lastWindowSize);
+		// Remember the size while the user resizes: reading AppWindow.Size inside Closed is unreliable
+		// (the window may already be torn down). Maximized/minimized sizes are not persisted.
+		AppWindow.Changed += (sender, args) =>
+		{
+			var restored = sender.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter presenter
+				|| presenter.State == Microsoft.UI.Windowing.OverlappedPresenterState.Restored;
+			if (args.DidSizeChange && restored)
+				lastWindowSize = sender.Size;
+		};
 		// Title bar / taskbar icon; the ico ships next to the plugin DLL.
 		var pluginDir = Path.GetDirectoryName(typeof(TodoWindow).Assembly.Location);
 		if (pluginDir is not null && File.Exists(Path.Combine(pluginDir, "Todo.ico")))
@@ -139,6 +151,16 @@ internal sealed class TodoWindow : Window
 		directoryText.PointerPressed += (_, _) => host.OpenPath(store.DataDirectory);
 
 		Content = BuildRoot();
+		// Responsive card layout: ~440 px per column, 1-3 columns. Only re-render when the count changes.
+		((FrameworkElement)Content).SizeChanged += (_, args) =>
+		{
+			var columns = Math.Clamp((int)(args.NewSize.Width / 440), 1, 3);
+			if (columns == cardColumns)
+				return;
+			cardColumns = columns;
+			if (activeEditBox is null)
+				ReloadUI();
+		};
 		ApplyHostTheme();
 
 		// Clicking a non-focusable element (card background, empty space) does NOT move focus away
@@ -403,7 +425,7 @@ internal sealed class TodoWindow : Window
 				RunSafe(async () =>
 				{
 					var text = box.Text;
-					await store.AddAsync(WithGroupTag(text));
+					await store.AddAsync(WithGroupTag(text), starred: store.SelectedGroup == TodoStore.StarGroup);
 					box.Text = string.Empty;
 					await ReloadAsync();
 				});
@@ -428,13 +450,27 @@ internal sealed class TodoWindow : Window
 
 	private void RebuildGroupBar()
 	{
+		// Don't destroy an in-progress inline group input when counts refresh.
+		if (_groupInputActive)
+			return;
+
 		groupBarPanel.Children.Clear();
 		var selected = store.SelectedGroup;
+		var pending = store.Pending;
 
-		groupBarPanel.Children.Add(BuildGroupChip("全部", groupValue: null, isSelected: string.IsNullOrEmpty(selected)));
+		groupBarPanel.Children.Add(BuildGroupChip("星标", TodoStore.StarGroup, selected == TodoStore.StarGroup, null,
+			FromHex("FF" + StarHex), "\uE735", pending.Count(t => t.IsStarred)));
+		groupBarPanel.Children.Add(BuildGroupChip("全部", groupValue: null, isSelected: string.IsNullOrEmpty(selected), null,
+			FromHex("FF" + AllHex), "\uE8FD", pending.Count));
+		groupBarPanel.Children.Add(BuildGroupChip("收集箱", TodoStore.UnassignedGroup, selected == TodoStore.UnassignedGroup, null,
+			GroupColor(null), GroupGlyph(null), pending.Count(t => store.GroupOf(t) is null)));
 		foreach (var group in store.Groups)
-			groupBarPanel.Children.Add(BuildGroupChip('@' + group, groupValue: group, isSelected: string.Equals(selected, group, StringComparison.OrdinalIgnoreCase), removableGroup: group));
-		groupBarPanel.Children.Add(BuildGroupChip("未分组", groupValue: TodoStore.UnassignedGroup, isSelected: selected == TodoStore.UnassignedGroup));
+		{
+			var name = group;
+			groupBarPanel.Children.Add(BuildGroupChip('@' + name, name, string.Equals(selected, name, StringComparison.OrdinalIgnoreCase), name,
+				GroupColor(name), GroupGlyph(name),
+				pending.Count(t => string.Equals(store.GroupOf(t), name, StringComparison.OrdinalIgnoreCase))));
+		}
 
 		var addButton = new Button
 		{
@@ -449,36 +485,216 @@ internal sealed class TodoWindow : Window
 		groupBarPanel.Children.Add(addButton);
 	}
 
-	private Button BuildGroupChip(string label, string? groupValue, bool isSelected, string? removableGroup = null)
+	// --- Group appearance (color + icon, like MarkTodo's list editor) ---
+
+	private const string StarHex = "FFB900";
+	private const string AllHex = "5B6B8C";
+	private const string InboxHex = "3B6DB3";
+
+	private static readonly string[] GroupPalette =
+	[
+		"3B6DB3", "C0392B", "FF8A1F", "D8A200", "34C759", "9ACD32", "00BCD4",
+		"1F7A8C", "0A84FF", "6C5CE7", "CC33DD", "FF2D55", "A2845E", "525A66",
+	];
+
+	private static readonly string[] GroupIcons =
+	[
+		"\uE8B7", "\uE8EC", "\uE734", "\uEB51", "\uE7C1", "\uE718", "\uE80F",
+		"\uE715", "\uE716", "\uE721", "\uE722", "\uE723", "\uE749", "\uE74E",
+		"\uE774", "\uE77B", "\uE787", "\uE713", "\uE70F", "\uE73E", "\uE707",
+		"\uE720", "\uE767", "\uE8E1", "\uE71D", "\uE7E8", "\uE8C8", "\uE8FD",
+	];
+
+	private string GroupColorHex(string? group)
 	{
-		var accent = (Color)Application.Current.Resources["SystemAccentColor"];
+		// The inbox (group == null) has its own reserved style key, so its look is editable too.
+		var key = group is null || group == TodoStore.UnassignedGroup ? TodoStore.UnassignedGroup : group;
+		if (key == TodoStore.UnassignedGroup)
+			return store.GetGroupStyle(key)?.Color is { Length: 6 } inbox ? inbox : InboxHex;
+
+		if (store.GetGroupStyle(key)?.Color is { Length: 6 } custom)
+			return custom;
+
+		var index = store.Groups.FindIndex(g => string.Equals(g, key, StringComparison.OrdinalIgnoreCase));
+		return GroupPalette[Math.Max(index, 0) % GroupPalette.Length];
+	}
+
+	private Color GroupColor(string? group)
+		=> FromHex("FF" + GroupColorHex(group));
+
+	private string GroupGlyph(string? group)
+	{
+		var key = group is null || group == TodoStore.UnassignedGroup ? TodoStore.UnassignedGroup : group;
+		if (key == TodoStore.UnassignedGroup)
+			return store.GetGroupStyle(key)?.Icon is { Length: > 0 } icon ? icon : "\uE8B7";
+
+		return store.GetGroupStyle(key)?.Icon is { Length: > 0 } custom ? custom : "\uE8EC";
+	}
+
+	private static Color Tint(Color color, byte alpha)
+		=> Color.FromArgb(alpha, color.R, color.G, color.B);
+
+	private void ShowGroupStyleEditor(FrameworkElement anchor, string group)
+	{
+		var flyout = new Flyout();
+		var currentColor = GroupColorHex(group);
+		var currentIcon = GroupGlyph(group);
+
+		var panel = new StackPanel { Spacing = 10, Width = 252 };
+		panel.Children.Add(new TextBlock
+		{
+			Text = group == TodoStore.UnassignedGroup ? "收集箱" : $"@{group}",
+			FontSize = 14,
+			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+		});
+
+		panel.Children.Add(new TextBlock { Text = "分组颜色", FontSize = 12, Opacity = 0.65 });
+		var colorGrid = NewSwatchGrid();
+		for (var i = 0; i < GroupPalette.Length; i++)
+		{
+			var hex = GroupPalette[i];
+			// Border instead of Button: Button's hover/pressed states paint a translucent white layer
+			// over the Background, which washes the swatch color out to near-white on mouse-over.
+			var swatch = new Border
+			{
+				Width = 28,
+				Height = 28,
+				CornerRadius = new CornerRadius(14),
+				Background = new SolidColorBrush(FromHex("FF" + hex)),
+				BorderBrush = Res("TextFillColorPrimaryBrush"),
+				BorderThickness = new Thickness(string.Equals(hex, currentColor, StringComparison.OrdinalIgnoreCase) ? 2 : 0),
+				HorizontalAlignment = HorizontalAlignment.Center,
+				VerticalAlignment = VerticalAlignment.Center,
+			};
+			swatch.Tapped += (_, _) => RunSafe(async () =>
+			{
+				flyout.Hide();
+				await store.SetGroupStyleAsync(group, hex, null);
+				RebuildGroupBar();
+				ReloadUI();
+			});
+			PlaceInSwatchGrid(colorGrid, swatch, i);
+		}
+		panel.Children.Add(colorGrid);
+
+		panel.Children.Add(new TextBlock { Text = "分组图标", FontSize = 12, Opacity = 0.65 });
+		var accent = GroupColor(group);
+		var iconGrid = NewSwatchGrid();
+		for (var i = 0; i < GroupIcons.Length; i++)
+		{
+			var glyph = GroupIcons[i];
+			var iconButton = new Button
+			{
+				Width = 30,
+				Height = 30,
+				MinWidth = 0,
+				Padding = new Thickness(0),
+				CornerRadius = new CornerRadius(6),
+				Background = glyph == currentIcon ? new SolidColorBrush(Tint(accent, 0x33)) : null,
+				BorderThickness = new Thickness(0),
+				HorizontalAlignment = HorizontalAlignment.Center,
+				Content = new FontIcon { Glyph = glyph, FontSize = 15, Foreground = new SolidColorBrush(accent) },
+			};
+			iconButton.Click += (_, _) => RunSafe(async () =>
+			{
+				flyout.Hide();
+				await store.SetGroupStyleAsync(group, null, glyph);
+				RebuildGroupBar();
+				ReloadUI();
+			});
+			PlaceInSwatchGrid(iconGrid, iconButton, i);
+		}
+		panel.Children.Add(new ScrollViewer
+		{
+			Content = iconGrid,
+			MaxHeight = 170,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+		});
+
+		flyout.Content = panel;
+		flyout.ShowAt(anchor);
+	}
+
+	private const int SwatchColumns = 7;
+
+	private static Grid NewSwatchGrid()
+	{
+		var grid = new Grid { RowSpacing = 6 };
+		for (var c = 0; c < SwatchColumns; c++)
+			grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		return grid;
+	}
+
+	private static void PlaceInSwatchGrid(Grid grid, FrameworkElement element, int index)
+	{
+		var row = index / SwatchColumns;
+		while (grid.RowDefinitions.Count <= row)
+			grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		Grid.SetRow(element, row);
+		Grid.SetColumn(element, index % SwatchColumns);
+		grid.Children.Add(element);
+	}
+
+	private Button BuildGroupChip(string label, string? groupValue, bool isSelected, string? removableGroup, Color color, string glyph, int count)
+	{
+		var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+		content.Children.Add(new FontIcon
+		{
+			Glyph = glyph,
+			FontSize = 11,
+			Foreground = new SolidColorBrush(color),
+			VerticalAlignment = VerticalAlignment.Center,
+		});
+		content.Children.Add(new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+		if (count > 0)
+		{
+			content.Children.Add(new TextBlock
+			{
+				Text = count.ToString(),
+				FontSize = 11,
+				Opacity = 0.6,
+				VerticalAlignment = VerticalAlignment.Center,
+			});
+		}
+
 		var chip = new Button
 		{
-			Content = label,
-			FontSize = 12,
+			Content = content,
 			Padding = new Thickness(10, 2, 10, 2),
 			MinWidth = 0,
 			CornerRadius = new CornerRadius(10),
 		};
 		if (isSelected)
 		{
-			chip.Background = new SolidColorBrush(Color.FromArgb(0x2E, accent.R, accent.G, accent.B));
-			chip.Foreground = new SolidColorBrush(accent);
+			chip.Background = new SolidColorBrush(Tint(color, 0x38));
+			chip.BorderBrush = new SolidColorBrush(Tint(color, 0xAA));
 		}
 
 		chip.Click += (_, _) => RunSafe(() => SelectGroupAsync(groupValue));
 
-		if (removableGroup is not null)
+		// Real groups get edit + remove; the inbox chip only gets the appearance editor.
+		var styleGroup = removableGroup ?? (groupValue == TodoStore.UnassignedGroup ? TodoStore.UnassignedGroup : null);
+		if (styleGroup is not null)
 		{
-			var removeItem = new MenuFlyoutItem { Text = "从分组条移除" };
-			removeItem.Click += (_, _) => RunSafe(async () =>
+			var editItem = new MenuFlyoutItem { Text = "编辑颜色和图标…" };
+			editItem.Click += (_, _) => ShowGroupStyleEditor(chip, styleGroup);
+			if (removableGroup is not null)
 			{
-				await store.RemoveGroupAsync(removableGroup);
-				RebuildGroupBar();
-				await ReloadAsync();
-			});
-			chip.ContextFlyout = new MenuFlyout { Items = { removeItem } };
-			Tip(chip, $"{label}（右键可从分组条移除）");
+				var removeItem = new MenuFlyoutItem { Text = "从分组条移除" };
+				removeItem.Click += (_, _) => RunSafe(async () =>
+				{
+					await store.RemoveGroupAsync(removableGroup);
+					RebuildGroupBar();
+					await ReloadAsync();
+				});
+				chip.ContextFlyout = new MenuFlyout { Items = { editItem, removeItem } };
+				Tip(chip, $"{label}（右键：编辑颜色和图标 / 移除）");
+			}
+			else
+			{
+				chip.ContextFlyout = new MenuFlyout { Items = { editItem } };
+				Tip(chip, $"{label}（右键：编辑颜色和图标）");
+			}
 		}
 
 		return chip;
@@ -567,7 +783,7 @@ internal sealed class TodoWindow : Window
 	private string WithGroupTag(string text)
 	{
 		var group = store.SelectedGroup;
-		if (string.IsNullOrEmpty(group) || group == TodoStore.UnassignedGroup)
+		if (string.IsNullOrEmpty(group) || group == TodoStore.UnassignedGroup || group == TodoStore.StarGroup)
 			return text;
 		return text.Contains('@' + group, StringComparison.Ordinal) ? text : text + " @" + group;
 	}
@@ -905,25 +1121,226 @@ internal sealed class TodoWindow : Window
 		pendingPanel.Children.Clear();
 		donePanel.Children.Clear();
 
-		foreach (var task in shownPending)
-			pendingPanel.Children.Add(CreateTaskRow(task));
+		// "全部" view: one colored card per group (MarkTodo style); a selected group/star view stays a flat list.
+		var cardMode = string.IsNullOrEmpty(store.SelectedGroup);
+		if (cardMode)
+			BuildGroupCards(shownPending, hideEmptyGroups: active);
+		else
+		{
+			foreach (var task in shownPending)
+				pendingPanel.Children.Add(CreateTaskRow(task));
+		}
 		foreach (var task in shownDone)
 			donePanel.Children.Add(CreateTaskRow(task));
 
 		countText.Text = active
 			? $"{shownPending.Count}/{store.Pending.Count}"
 			: store.Pending.Count > 0 ? $"{store.Pending.Count} 项待办" : "0";
-		emptyState.Visibility = shownPending.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+		emptyState.Visibility = shownPending.Count == 0 && !(cardMode && !active) ? Visibility.Visible : Visibility.Collapsed;
 		emptyTitleText.Text = active ? "没有匹配的待办" : "没有待办事项";
 		doneHeaderText.Text = active
 			? $"已完成 ({shownDone.Count}/{store.Done.Count})"
 			: $"已完成 ({store.Done.Count})";
 		doneExpander.Visibility = store.Done.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+		RebuildGroupBar();
 		UpdateDirectoryText();
 
 		if (selectedTask is not null && !store.Pending.Contains(selectedTask) && !store.Done.Contains(selectedTask))
 			selectedTask = null;
+	}
+
+	// --- Group cards ("全部" view) ---
+
+	// Inbox first, then each defined group: colored header (icon, name, done/total), the group's pending
+	// tasks, and an inline quick-add row. Progress counts come from the whole store, not the filtered view.
+	private void BuildGroupCards(List<TodoTask> shownPending, bool hideEmptyGroups)
+	{
+		var cards = new List<Border>();
+		List<string?> groups = [null, .. store.Groups];
+		foreach (var group in groups)
+		{
+			var tasks = shownPending.Where(t => SameGroup(store.GroupOf(t), group)).ToList();
+			if (hideEmptyGroups && tasks.Count == 0)
+				continue;
+
+			var total = store.Pending.Count(t => SameGroup(store.GroupOf(t), group))
+				+ store.Done.Count(t => SameGroup(store.GroupOf(t), group));
+			var done = store.Done.Count(t => SameGroup(store.GroupOf(t), group));
+			cards.Add(CreateGroupCard(group, tasks, done, total));
+		}
+
+		if (cardColumns <= 1)
+		{
+			foreach (var card in cards)
+				pendingPanel.Children.Add(card);
+			return;
+		}
+
+		// Wide window: distribute cards round-robin into independent columns so uneven card heights
+		// don't leave gaps (masonry-like), keeping inbox/group order left-to-right, top-to-bottom.
+		var grid = new Grid { ColumnSpacing = 12 };
+		var columns = new StackPanel[cardColumns];
+		for (var c = 0; c < cardColumns; c++)
+		{
+			grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+			columns[c] = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+			Grid.SetColumn(columns[c], c);
+			grid.Children.Add(columns[c]);
+		}
+
+		for (var i = 0; i < cards.Count; i++)
+			columns[i % cardColumns].Children.Add(cards[i]);
+		pendingPanel.Children.Add(grid);
+	}
+
+	private static bool SameGroup(string? a, string? b)
+		=> string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+	private Border CreateGroupCard(string? group, List<TodoTask> tasks, int done, int total)
+	{
+		var color = GroupColor(group);
+		var white = Color.FromArgb(255, 255, 255, 255);
+
+		var title = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+		title.Children.Add(new FontIcon { Glyph = GroupGlyph(group), FontSize = 14, Foreground = new SolidColorBrush(white) });
+		title.Children.Add(new TextBlock
+		{
+			Text = group is null ? "收集箱" : group,
+			FontSize = 14,
+			FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+			Foreground = new SolidColorBrush(white),
+		});
+
+		var progress = new TextBlock
+		{
+			Text = $"{done}/{total}",
+			FontSize = 12,
+			Foreground = new SolidColorBrush(Color.FromArgb(0xE0, 255, 255, 255)),
+			VerticalAlignment = VerticalAlignment.Center,
+		};
+
+		var headerGrid = new Grid
+		{
+			ColumnDefinitions =
+			{
+				new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+				new ColumnDefinition { Width = GridLength.Auto },
+			},
+		};
+		headerGrid.Children.Add(title);
+		Grid.SetColumn(progress, 1);
+		headerGrid.Children.Add(progress);
+
+		var header = new Border
+		{
+			Background = new SolidColorBrush(color),
+			CornerRadius = new CornerRadius(10, 10, 0, 0),
+			Padding = new Thickness(12, 8, 12, 8),
+			Child = headerGrid,
+		};
+		var styleKey = group ?? TodoStore.UnassignedGroup;
+		var editItem = new MenuFlyoutItem { Text = "编辑颜色和图标…" };
+		editItem.Click += (_, _) => ShowGroupStyleEditor(header, styleKey);
+		header.ContextFlyout = new MenuFlyout { Items = { editItem } };
+
+		var body = new StackPanel { Padding = new Thickness(8, 8, 8, 4) };
+		foreach (var task in tasks)
+			body.Children.Add(CreateTaskRow(task));
+		body.Children.Add(BuildQuickAdd(group, color));
+
+		var cardContent = new StackPanel();
+		cardContent.Children.Add(header);
+		cardContent.Children.Add(body);
+
+		return new Border
+		{
+			CornerRadius = new CornerRadius(10),
+			Margin = new Thickness(0, 0, 0, 12),
+			Background = Res("LayerFillColorDefaultBrush"),
+			BorderBrush = new SolidColorBrush(Tint(color, 0x66)),
+			BorderThickness = new Thickness(1),
+			Child = cardContent,
+		};
+	}
+
+	// "+ 添加待办" button that turns into an input box; Enter saves into this group, Esc/click-away cancels.
+	private Border BuildQuickAdd(string? group, Color color)
+	{
+		var slot = new Border { Margin = new Thickness(0, 0, 0, 4) };
+
+		var addButton = new Button
+		{
+			Content = new StackPanel
+			{
+				Orientation = Orientation.Horizontal,
+				Spacing = 6,
+				Children =
+				{
+					new FontIcon { Glyph = "\uE710", FontSize = 11, Foreground = new SolidColorBrush(color) },
+					new TextBlock { Text = "添加待办", FontSize = 12, Foreground = new SolidColorBrush(color) },
+				},
+			},
+			HorizontalAlignment = HorizontalAlignment.Stretch,
+			HorizontalContentAlignment = HorizontalAlignment.Center,
+			Background = new SolidColorBrush(Tint(color, 0x1F)),
+			CornerRadius = new CornerRadius(8),
+		};
+		slot.Child = addButton;
+
+		addButton.Click += (_, _) =>
+		{
+			var input = new TextBox
+			{
+				PlaceholderText = group is null ? "记到收集箱，回车保存" : $"记到 @{group}，回车保存",
+				FontSize = 13,
+				CornerRadius = new CornerRadius(8),
+			};
+
+			var finished = false;
+			void Close()
+			{
+				if (finished)
+					return;
+				finished = true;
+				slot.Child = addButton;
+			}
+
+			input.LostFocus += (_, _) => Close();
+			input.KeyDown += (_, args) =>
+			{
+				if (args.Key is VirtualKey.Escape)
+				{
+					args.Handled = true;
+					Close();
+				}
+				else if (args.Key is VirtualKey.Enter)
+				{
+					args.Handled = true;
+					var text = input.Text;
+					if (string.IsNullOrWhiteSpace(text))
+					{
+						Close();
+						return;
+					}
+
+					finished = true;
+					RunSafe(async () =>
+					{
+						var body = group is not null && !text.Contains('@' + group, StringComparison.OrdinalIgnoreCase)
+							? text.Trim() + " @" + group
+							: text.Trim();
+						await store.AddAsync(body);
+						await ReloadAsync();
+					});
+				}
+			};
+
+			slot.Child = input;
+			input.Focus(FocusState.Programmatic);
+		};
+
+		return slot;
 	}
 
 	private StackPanel BuildDoneContent()
@@ -971,6 +1388,9 @@ internal sealed class TodoWindow : Window
 		};
 		if (task.IsCompleted)
 			card.Opacity = 0.62;
+		// Cards of a defined group get a border tinted with the group color (MarkTodo-style color coding).
+		if (store.GroupOf(task) is { } cardGroup)
+			card.BorderBrush = new SolidColorBrush(Tint(GroupColor(cardGroup), 0x99));
 		if (ReferenceEquals(selectedTask, task))
 			card.Background = Res("SubtleFillColorSecondaryBrush");
 
@@ -1042,6 +1462,8 @@ internal sealed class TodoWindow : Window
 			var tagsLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Margin = new Thickness(30, 0, 0, 0) };
 			foreach (var tag in task.Tags)
 			{
+				var isGroup = store.Groups.Contains(tag, StringComparer.OrdinalIgnoreCase);
+				var tagColor = isGroup ? GroupColor(tag) : Color.FromArgb(255, 0x8A, 0x88, 0x88);
 				var tagChip = new Button
 				{
 					Content = '@' + tag,
@@ -1049,6 +1471,8 @@ internal sealed class TodoWindow : Window
 					Padding = new Thickness(6, 0, 6, 0),
 					MinWidth = 0,
 					CornerRadius = new CornerRadius(8),
+					Background = new SolidColorBrush(Tint(tagColor, 0x2E)),
+					Foreground = new SolidColorBrush(tagColor),
 				};
 				Tip(tagChip, "筛选该分组");
 				tagChip.Click += (_, _) => RunSafe(() => SelectGroupAsync(tag));
@@ -1058,6 +1482,27 @@ internal sealed class TodoWindow : Window
 		}
 		if (task.Attachments.Count > 0)
 			content.Children.Add(BuildAttachmentStrip(task));
+
+		var starButton = new Button
+		{
+			Content = new FontIcon
+			{
+				Glyph = task.IsStarred ? "\uE735" : "\uE734", // FavoriteStarFill / FavoriteStar
+				FontSize = 14,
+				Foreground = task.IsStarred ? new SolidColorBrush(FromHex("FF" + StarHex)) : Res("TextFillColorSecondaryBrush"),
+			},
+			Padding = new Thickness(6, 4, 6, 4),
+			MinWidth = 0,
+			VerticalAlignment = VerticalAlignment.Top,
+			Background = null,
+			BorderThickness = new Thickness(0),
+		};
+		Tip(starButton, task.IsStarred ? "取消星标" : "标记星标（汇总到「星标」视图）");
+		starButton.Click += (_, _) => RunSafe(async () =>
+		{
+			await store.SetStarredAsync(task, !task.IsStarred);
+			await ReloadAsync();
+		});
 
 		var deleteButton = new Button
 		{
@@ -1077,18 +1522,21 @@ internal sealed class TodoWindow : Window
 
 		var grid = new Grid
 		{
-			ColumnSpacing = 10,
+			ColumnSpacing = 6,
 			ColumnDefinitions =
 			{
 				new ColumnDefinition { Width = GridLength.Auto },
 				new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+				new ColumnDefinition { Width = GridLength.Auto },
 				new ColumnDefinition { Width = GridLength.Auto },
 			},
 		};
 		grid.Children.Add(checkBox);
 		Grid.SetColumn(content, 1);
 		grid.Children.Add(content);
-		Grid.SetColumn(deleteButton, 2);
+		Grid.SetColumn(starButton, 2);
+		grid.Children.Add(starButton);
+		Grid.SetColumn(deleteButton, 3);
 		grid.Children.Add(deleteButton);
 
 		card.Child = grid;
@@ -1158,7 +1606,9 @@ internal sealed class TodoWindow : Window
 	{
 		try
 		{
-			var size = AppWindow.Size;
+			var size = lastWindowSize;
+			if (size.Width < 320 || size.Height < 400)
+				return;
 			File.WriteAllText(WindowSizeFilePath, $"{size.Width} {size.Height}");
 		}
 		catch
@@ -1175,11 +1625,31 @@ internal sealed class TodoWindow : Window
 
 	private void UpdateCardSelections()
 	{
-		foreach (var card in pendingPanel.Children.Concat(donePanel.Children).OfType<Border>())
+		foreach (var card in EnumerateTaskCards(pendingPanel).Concat(EnumerateTaskCards(donePanel)))
 		{
 			card.Background = card.Tag is TodoTask task && ReferenceEquals(task, selectedTask)
 				? Res("SubtleFillColorSecondaryBrush")
 				: Res("LayerFillColorDefaultBrush");
+		}
+	}
+
+	// Task rows are Borders tagged with their TodoTask; group cards nest them one or two panels deep.
+	private static IEnumerable<Border> EnumerateTaskCards(Panel panel)
+	{
+		foreach (var child in panel.Children)
+		{
+			if (child is Border { Tag: TodoTask } row)
+				yield return row;
+			else if (child is Border { Child: Panel inner })
+			{
+				foreach (var nested in EnumerateTaskCards(inner))
+					yield return nested;
+			}
+			else if (child is Panel panelChild)
+			{
+				foreach (var nested in EnumerateTaskCards(panelChild))
+					yield return nested;
+			}
 		}
 	}
 
@@ -1425,7 +1895,7 @@ internal sealed class TodoWindow : Window
 			}
 			else
 			{
-				await store.AddAsync(WithGroupTag(string.IsNullOrWhiteSpace(text) ? "截图" : text), [attachment]);
+				await store.AddAsync(WithGroupTag(string.IsNullOrWhiteSpace(text) ? "截图" : text), [attachment], store.SelectedGroup == TodoStore.StarGroup);
 				SetStatus($"已新建任务并附加截图：{attachment.FileName}");
 			}
 
