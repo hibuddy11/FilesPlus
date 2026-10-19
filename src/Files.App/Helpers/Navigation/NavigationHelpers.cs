@@ -196,7 +196,8 @@ namespace Files.App.Helpers
 				{
 					for (var d = 0; d < hints[tab].Length; d++)
 					{
-						if (tabs.All(t => t == tab || d >= hints[t].Length || hints[t][d] != hints[tab][d]))
+						// Tabs with a user-assigned name keep that header and never conflict at any depth
+						if (tabs.All(t => t == tab || !hints.TryGetValue(t, out var otherHints) || d >= otherHints.Length || otherHints[d] != hints[tab][d]))
 						{
 							tab.Header = $"{hints[tab][d]}\\{tab.Description}";
 							break;
