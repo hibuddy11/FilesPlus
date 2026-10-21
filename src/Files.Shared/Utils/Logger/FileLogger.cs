@@ -65,7 +65,10 @@ namespace Files.Shared
 
 		private async Task ProcessLogQueueAsync()
 		{
-			PurgeLogs(100);
+			// Archive the previous session's log instead of trimming it: long-running issues
+			// (e.g. input dead after resume from sleep) need the full timeline from before the
+			// restart, which a purge destroyed on every launch.
+			RotateLogs();
 			var pendingMessages = new List<string>();
 			var consecutiveFailures = 0;
 
@@ -116,24 +119,34 @@ namespace Files.Shared
 			}
 		}
 
-		private void PurgeLogs(int numberOfLinesKept)
+		private void RotateLogs()
 		{
-			if (!File.Exists(filePath))
-				return;
-
 			try
 			{
-				var lastLines = File.ReadLines(filePath)
-					.TakeLast(numberOfLinesKept + 1)
-					.ToArray();
-				if (lastLines.Length > numberOfLinesKept)
+				var directory = Path.GetDirectoryName(filePath);
+				var fileName = Path.GetFileNameWithoutExtension(filePath);
+				var extension = Path.GetExtension(filePath);
+
+				// The previous session's log becomes debug-yyyyMMdd-HHmmss.log
+				if (File.Exists(filePath))
+					File.Move(filePath, Path.Combine(directory ?? ".", $"{fileName}-{DateTime.Now:yyyyMMdd-HHmmss}{extension}"));
+
+				if (directory is null)
+					return;
+
+				// Keep the newest 7 archives; the current session writes a fresh debug.log
+				foreach (var archive in Directory
+					.EnumerateFiles(directory, $"{fileName}-*{extension}")
+					.OrderByDescending(Path.GetFileName)
+					.Skip(7))
 				{
-					File.WriteAllLines(filePath, lastLines.Skip(lastLines.Length - numberOfLinesKept));
+					try { File.Delete(archive); }
+					catch { }
 				}
 			}
 			catch (Exception e)
 			{
-				Debug.WriteLine($"Purging the log file failed with the following exception:\n{e}");
+				Debug.WriteLine($"Rotating the log file failed with the following exception:\n{e}");
 			}
 		}
 

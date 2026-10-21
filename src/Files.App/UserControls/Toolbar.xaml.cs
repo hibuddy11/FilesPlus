@@ -3,6 +3,7 @@
 
 using CommunityToolkit.WinUI;
 using Files.App.Dialogs;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -118,23 +119,37 @@ namespace Files.App.UserControls
 
 		private async void AddCustomToolButton_Click(object sender, RoutedEventArgs e)
 		{
-			var dialog = new AddCustomToolDialog()
+			try
 			{
-				XamlRoot = MainWindow.Instance.Content.XamlRoot,
-			};
+				var dialog = new AddCustomToolDialog()
+				{
+					XamlRoot = MainWindow.Instance.Content.XamlRoot,
+				};
 
-			if (await dialog.ShowAsync() != DialogResult.Primary)
-				return;
+				App.Logger?.LogInformation("AddCustomTool dialog opening.");
+				if (await dialog.ShowAsync() != DialogResult.Primary)
+				{
+					App.Logger?.LogInformation("AddCustomTool dialog dismissed.");
+					return;
+				}
+				App.Logger?.LogInformation("AddCustomTool dialog accepted.");
 
-			var vm = dialog.ViewModel;
-			var tools = UserSettingsService.AppearanceSettingsService.CustomTools ?? [];
-			tools.Add(new CustomToolItem
+				var vm = dialog.ViewModel;
+				var tools = UserSettingsService.AppearanceSettingsService.CustomTools ?? [];
+				tools.Add(new CustomToolItem
+				{
+					Name = vm.ToolName.Trim(),
+					ExecutablePath = vm.ExecutablePath.Trim(),
+					Arguments = string.IsNullOrWhiteSpace(vm.Arguments) ? null : vm.Arguments.Trim(),
+				});
+				UserSettingsService.AppearanceSettingsService.CustomTools = tools;
+			}
+			catch (Exception ex)
 			{
-				Name = vm.ToolName.Trim(),
-				ExecutablePath = vm.ExecutablePath.Trim(),
-				Arguments = string.IsNullOrWhiteSpace(vm.Arguments) ? null : vm.Arguments.Trim(),
-			});
-			UserSettingsService.AppearanceSettingsService.CustomTools = tools;
+				// async void must not throw; a stuck ContentDialog queue (e.g. after resume from
+				// sleep) surfaces here instead of silently swallowing the click.
+				App.Logger?.LogWarning(ex, "Failed to show the AddCustomTool dialog.");
+			}
 		}
 
 		private static async Task LaunchCustomToolAsync(CustomToolItem tool)
@@ -145,7 +160,9 @@ namespace Files.App.UserControls
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine(ex);
+				// The tool buttons must not fail silently: without this log a broken launch
+				// looks exactly like a dead button.
+				App.Logger?.LogWarning(ex, $"Failed to launch custom tool '{tool.Name}' ('{tool.ExecutablePath}').");
 			}
 		}
 
