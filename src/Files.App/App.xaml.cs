@@ -290,6 +290,10 @@ namespace Files.App
 
 			// Reclaim the tray icon if a sibling instance's exit removed the shared-GUID icon
 			SystemTrayIcon?.EnsureCreated();
+
+			// A leaked popup bridge HWND swallows every click under it (WinAppSDK popup bug):
+			// on activation all live popups are already dismissed, so any survivor is a leak.
+			Utils.Shell.LeakedPopupCleaner.HideLeakedPopupBridges();
 		}
 
 		/// <summary>
